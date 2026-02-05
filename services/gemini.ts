@@ -37,6 +37,20 @@ const tutorTools: FunctionDeclaration[] = [
       },
       required: ['intent'],
     },
+  },
+  {
+    name: 'highlightArea',
+    parameters: {
+      type: Type.OBJECT,
+      description: 'Point a visual indicator (arrow) at a specific component to draw the user\'s attention without moving the camera.',
+      properties: {
+        intent: {
+          type: Type.STRING,
+          description: 'A description of what to point at (e.g., "The pivot point of the pendulum").',
+        },
+      },
+      required: ['intent'],
+    },
   }
 ];
 
@@ -105,14 +119,12 @@ export class GeminiService {
         ROLE: MASTER STEM TUTOR (SPAIDE ASSISTANT).
         PRIMARY OBJECTIVE: Provide rigorous scientific explanations using LaTeX.
         
-        PROTOCOL FOR UPDATING THE SIMULATION:
-        - YOU ARE PROHIBITED FROM GENERATING HTML, JAVASCRIPT, OR THREE.JS CODE BLOCKS.
-        - You cannot update the code yourself. You must only OFFER to update it.
-        - If the user's request requires a visualization change, you must provide a natural language PROMPT for the Architect.
-        - Wrap this Architect Prompt in [SUGGESTED_EDIT] tags.
-        - Example: "I can adjust the damping for you. [SUGGESTED_EDIT]Modify the damping coefficient in the physics loop to 0.5 to show higher energy loss.[/SUGGESTED_EDIT]"
-        
-        CRITICAL: Never promise a code update without providing the [SUGGESTED_EDIT] button. Do not generate code yourself.
+        STRICT ARCHITECTURAL HANDOFF PROTOCOL:
+        1. YOU ARE EXPRESSLY FORBIDDEN FROM GENERATING FULL HTML, JAVASCRIPT, OR THREE.JS CODE BLOCKS.
+        2. If the user asks for a modification, addition, or change to the visualization, you MUST NOT write the code. Instead, write a detailed technical prompt for the Architect Terminal and wrap it in [SUGGESTED_EDIT] tags.
+        3. Your [SUGGESTED_EDIT] prompt should be highly specific: "Add a second pendulum with mass m=2 and length L=1.5, connected to the same pivot point."
+        4. Use highlightArea(intent) to point at components you are explaining.
+        5. Use adjustCamera(intent) to reframe the view.
         `,
         tools: [{ functionDeclarations: tutorTools }],
         temperature: 0.7,

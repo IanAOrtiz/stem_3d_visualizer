@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Terminal, Cpu, Info, ChevronRight, Binary, Image as ImageIcon, X, Paperclip, Zap } from 'lucide-react';
+import { Send, Terminal, Cpu, Info, ChevronRight, Binary, Image as ImageIcon, X, Paperclip, Zap, Copy, Check, Code } from 'lucide-react';
 import { Message } from '../types';
 
 interface ChatInterfaceProps {
@@ -14,6 +14,7 @@ interface ChatInterfaceProps {
 const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, onApplyEdit, isLoading, isLightMode }) => {
   const [input, setInput] = useState('');
   const [selectedImage, setSelectedImage] = useState<{ data: string, mimeType: string, preview: string } | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -69,6 +70,12 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, 
     }
   };
 
+  const copyToClipboard = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
   const themeClasses = isLightMode 
     ? {
         bg: 'bg-white',
@@ -80,7 +87,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, 
         msgAi: 'bg-white border-slate-200 text-slate-700',
         inputBg: 'bg-slate-50',
         inputBorder: 'border-slate-200',
-        footer: 'bg-white'
+        footer: 'bg-white',
+        codeBg: 'bg-slate-50/80 border-slate-200'
       }
     : {
         bg: 'bg-neutral-900',
@@ -92,26 +100,63 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, 
         msgAi: 'bg-black/50 border border-white/5 text-neutral-200',
         inputBg: 'bg-black/30',
         inputBorder: 'border-neutral-700',
-        footer: 'bg-neutral-900'
+        footer: 'bg-neutral-900',
+        codeBg: 'bg-[#050505] border-white/10'
       };
 
-  const formatContent = (content: string) => {
-    let cleaned = content
+  const renderContent = (content: string, msgId: string) => {
+    const codeRegex = /```(?:html|javascript|threejs|js)?\s*([\s\S]*?)```/gi;
+    const parts = [];
+    let lastIndex = 0;
+    let match;
+
+    const cleanContent = content
       .replace(/\[METADATA\][\s\S]*?\[\/METADATA\]/gi, '')
       .replace(/\[SUGGESTED_EDIT\][\s\S]*?\[\/SUGGESTED_EDIT\]/gi, '');
-    
-    cleaned = cleaned.replace(/```[\s\S]*?```/g, () => `\n\n[Architectural System Rendered]\n\n`);
 
-    const lowerCleaned = cleaned.toLowerCase();
-    const doctypeIdx = lowerCleaned.indexOf('<!doctype');
-    const htmlIdx = lowerCleaned.indexOf('<html');
-    const startIdx = doctypeIdx !== -1 ? doctypeIdx : (htmlIdx !== -1 ? htmlIdx : -1);
-
-    if (startIdx !== -1) {
-      cleaned = cleaned.substring(0, startIdx) + `\n\n[Architectural System Rendered]\n\n`;
+    while ((match = codeRegex.exec(cleanContent)) !== null) {
+      if (match.index > lastIndex) {
+        parts.push(
+          <div key={`text-${lastIndex}`} className="whitespace-pre-wrap font-medium leading-relaxed mb-4">
+            {cleanContent.substring(lastIndex, match.index)}
+          </div>
+        );
+      }
+      const code = match[1].trim();
+      const codeId = `${msgId}-code-${lastIndex}`;
+      parts.push(
+        <div key={`code-${match.index}`} className={`my-6 rounded-xl border overflow-hidden shadow-2xl ${themeClasses.codeBg}`}>
+          <div className="flex items-center justify-between px-4 py-2.5 border-b border-inherit bg-black/20">
+            <div className="flex items-center gap-2">
+              <Code size={12} className="text-cyan-400" />
+              <span className="text-[10px] font-black uppercase tracking-widest opacity-60">System.Source</span>
+            </div>
+            <button 
+              onClick={() => copyToClipboard(code, codeId)}
+              className="p-1.5 hover:bg-white/10 rounded-lg transition-all text-cyan-400"
+            >
+              {copiedId === codeId ? <Check size={14} /> : <Copy size={14} />}
+            </button>
+          </div>
+          <div className="p-4 overflow-x-auto">
+            <pre className="text-[11px] font-mono leading-relaxed text-cyan-50/90 selection:bg-cyan-500/30">
+              <code>{code}</code>
+            </pre>
+          </div>
+        </div>
+      );
+      lastIndex = codeRegex.lastIndex;
     }
 
-    return cleaned.trim();
+    if (lastIndex < cleanContent.length) {
+      parts.push(
+        <div key={`text-end`} className="whitespace-pre-wrap font-medium leading-relaxed">
+          {cleanContent.substring(lastIndex)}
+        </div>
+      );
+    }
+
+    return parts;
   };
 
   return (
@@ -135,7 +180,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, 
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-6 space-y-8 scroll-smooth">
         {messages.map((msg) => (
           <div key={msg.id} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-            <div className={`max-w-[92%] p-5 rounded-2xl text-sm border shadow-xl transition-all ${
+            <div className={`max-w-[95%] p-5 rounded-2xl text-sm border shadow-xl transition-all ${
               msg.role === 'user' ? themeClasses.msgUser : themeClasses.msgAi
             }`}>
               <div className="mb-3 flex items-center justify-between opacity-50">
@@ -147,8 +192,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, 
                 </div>
                 <span className="text-[9px] font-mono">#{msg.id.slice(-4)}</span>
               </div>
-              <div className="whitespace-pre-wrap font-medium leading-relaxed">
-                {formatContent(msg.content)}
+              <div className="content-rendered">
+                {renderContent(msg.content, msg.id)}
               </div>
             </div>
             <span className={`mt-2 mx-2 text-[8px] uppercase font-bold tracking-widest ${isLightMode ? 'text-slate-400' : 'text-neutral-600'}`}>

@@ -7,7 +7,12 @@ export const BRAIN_PROMPT = `
 [MODULE: BRAIN - MATH ENGINE]
 1. Calculate physics/math state for parameter t (0.0 to 1.0).
 2. For transitions, t=0 is initial state, t=1 is steady-state/end.
-3. OUTPUT: JSON metadata: {"title": "string", "description": "string", "temporalMode": "Transient|Steady"}.
+3. OUTPUT: JSON metadata inside [METADATA] tags: {
+    "key": "descriptive_technical_identifier_v1_revision_X", 
+    "description": "A comprehensive mechanical and mathematical analysis. Explain the underlying physics equations, the role of constants used, and how the temporal variable t influences the state vectors.", 
+    "code": "full_source_code", 
+    "tags": ["scientific_tag1", "technical_tag2"]
+}.
 `;
 
 /**

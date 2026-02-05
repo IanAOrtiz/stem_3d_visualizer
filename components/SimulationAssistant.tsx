@@ -18,6 +18,7 @@ interface SimulationAssistantProps {
   setTime: (t: number) => void;
   setIsPlaying: (p: boolean) => void;
   onCameraUpdate: (cameraData: { position: { x: number, y: number, z: number }, target: { x: number, y: number, z: number } }) => void;
+  onHighlightPoint: (target: { x: number, y: number, z: number }) => void;
 }
 
 const SimulationAssistant: React.FC<SimulationAssistantProps> = ({ 
@@ -33,7 +34,8 @@ const SimulationAssistant: React.FC<SimulationAssistantProps> = ({
   isLoading,
   setTime,
   setIsPlaying,
-  onCameraUpdate
+  onCameraUpdate,
+  onHighlightPoint
 }) => {
   const [width, setWidth] = useState(480);
   const [isResizing, setIsResizing] = useState(false);
@@ -111,7 +113,6 @@ const SimulationAssistant: React.FC<SimulationAssistantProps> = ({
       
       const parts = response.candidates?.[0]?.content?.parts || [];
       
-      // PROCESS TOOLS IMMEDIATELY
       for (const part of parts) {
         if (part.text) {
           textContent += part.text;
@@ -126,13 +127,17 @@ const SimulationAssistant: React.FC<SimulationAssistantProps> = ({
               toolExecutionStatus += `\n\n[Demonstration: Timeline fixed at t=${t.toFixed(2)}]`;
             }
           }
-          if (fc.name === 'adjustCamera') {
+          if (fc.name === 'adjustCamera' || fc.name === 'highlightArea') {
             const { intent } = fc.args as any;
-            // TRIGGER CAMERA IMMEDIATELY
             geminiService.sendCameraManMessage(intent, activeCode).then(settings => {
-              if (settings) onCameraUpdate(settings);
+              if (settings) {
+                if (fc.name === 'adjustCamera') onCameraUpdate(settings);
+                onHighlightPoint(settings.target);
+              }
             });
-            toolExecutionStatus += `\n\n[Cinematic Reframing Triggered]`;
+            toolExecutionStatus += fc.name === 'adjustCamera' 
+                ? `\n\n[Cinematic Reframing Triggered]` 
+                : `\n\n[Spatial Indicator Deployed]`;
           }
         }
       }
@@ -141,7 +146,6 @@ const SimulationAssistant: React.FC<SimulationAssistantProps> = ({
       if (!finalContent && toolExecutionStatus) finalContent = "Applying requested visual adjustments.";
       finalContent += toolExecutionStatus;
       
-      // Detect Architect Prompt [SUGGESTED_EDIT]
       const editMatch = finalContent.match(/\[SUGGESTED_EDIT\]([\s\S]*?)\[\/SUGGESTED_EDIT\]/i);
       let suggestedEdit: string | undefined;
       if (editMatch) {
@@ -210,10 +214,10 @@ const SimulationAssistant: React.FC<SimulationAssistantProps> = ({
               }`}>
                 <div className="text-[8px] font-black uppercase tracking-[0.3em] mb-3 opacity-30">{m.role === 'user' ? 'Inquiry' : 'Assistant Theory'}</div>
                 
-                {m.content.includes('[Cinematic') && (
+                {(m.content.includes('[Cinematic') || m.content.includes('[Spatial')) && (
                   <div className="mb-3 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-cyan-500/20 border border-cyan-500/30 text-[9px] font-black uppercase tracking-widest text-cyan-400">
                     <Camera size={10} />
-                    Active Reframing
+                    Spatial Tracking Active
                   </div>
                 )}
 

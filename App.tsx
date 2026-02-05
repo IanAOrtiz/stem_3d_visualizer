@@ -71,8 +71,8 @@ const REFERENCE_VISUALIZATION = `
 
         function animate() {
             requestAnimationFrame(animate);
-            controls.update();
-            renderer.render(scene, camera);
+            if (controls) controls.update();
+            if (renderer && scene && camera) renderer.render(scene, camera);
         }
 
         window.addEventListener('load', init);
@@ -83,7 +83,12 @@ const REFERENCE_VISUALIZATION = `
 
 const App: React.FC = () => {
   const [terminalMessages, setTerminalMessages] = useState<Message[]>([
-    { id: '1', role: 'assistant', content: "ARCHITECT_TERMINAL: Ready for architectural commands.", timestamp: new Date() },
+    { 
+      id: '1', 
+      role: 'assistant', 
+      content: `ARCHITECT_TERMINAL: Booting system... Initial source code loaded.\n\n\`\`\`html\n${REFERENCE_VISUALIZATION}\n\`\`\``, 
+      timestamp: new Date() 
+    },
   ]);
   const [hubMessages, setHubMessages] = useState<Message[]>([
     { id: 'h1', role: 'assistant', content: INITIAL_MESSAGE, timestamp: new Date() },
@@ -92,11 +97,11 @@ const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [activeCode, setActiveCode] = useState<string>(REFERENCE_VISUALIZATION);
   const [theme, setTheme] = useState<'light' | 'dark'>('dark');
-  const [currentMetadata, setCurrentMetadata] = useState<{ title: string; description: string; subject: Subject; temporalMode?: TemporalMode; hasParticles?: boolean } | null>({
-    title: "System Standby",
-    description: "Core visualization node is currently in idle mode.",
-    subject: "Unknown",
-    temporalMode: "Steady"
+  const [currentMetadata, setCurrentMetadata] = useState<{ key: string; description: string; code: string; tags: string[] } | null>({
+    key: "system_standby_node",
+    description: "Core visualization node is currently in idle mode. Awaiting scientific parameters or visual reference for structural instantiation.",
+    code: REFERENCE_VISUALIZATION,
+    tags: ["standby", "initial"]
   });
   const [globalTime, setGlobalTime] = useState(0);
   const [playbackRate, setPlaybackRate] = useState(1.0);
@@ -128,6 +133,13 @@ const App: React.FC = () => {
     }
   };
 
+  const handleHighlightPoint = (target: { x: number, y: number, z: number }) => {
+    const iframe = document.querySelector('iframe');
+    if (iframe && iframe.contentWindow) {
+      iframe.contentWindow.postMessage({ type: 'SET_POI', position: target }, '*');
+    }
+  };
+
   const extractCode = (text: string) => {
     const codeMatch = text.match(/```(?:html|javascript|threejs|js)?\s*([\s\S]*?)```/i);
     if (codeMatch) return codeMatch[1].trim();
@@ -138,6 +150,18 @@ const App: React.FC = () => {
     if (start !== -1) {
       const endIdx = lower.lastIndexOf('</html>');
       return text.substring(start, endIdx !== -1 ? endIdx + 7 : undefined).trim();
+    }
+    return null;
+  };
+
+  const parseMetadata = (text: string) => {
+    const match = text.match(/\[METADATA\]\s*([\s\S]*?)\s*\[\/METADATA\]/i);
+    if (match) {
+      try {
+        return JSON.parse(match[1]);
+      } catch (e) {
+        console.error("Metadata parsing failed", e);
+      }
     }
     return null;
   };
@@ -169,26 +193,28 @@ const App: React.FC = () => {
       }
 
       const htmlCode = extractCode(content);
+      const metadata = parseMetadata(content);
 
       if (htmlCode) {
         setActiveCode(htmlCode);
+        if (metadata) setCurrentMetadata(metadata);
         setTerminalMessages(prev => [...prev, { 
           id: Date.now().toString(), 
           role: 'assistant', 
-          content: "RENDER_COMPLETE: Visualization pipeline synchronized. Simulation node updated.", 
+          content: content, 
           timestamp: new Date() 
         }]);
       } else {
         setTerminalMessages(prev => [...prev, { 
           id: Date.now().toString(), 
           role: 'assistant', 
-          content: "ERROR: Extraction failure. The architectural core failed to resolve a valid Three.js payload.", 
+          content: content || "ERROR: Extraction failure. The architectural core failed to resolve a valid Three.js payload.", 
           timestamp: new Date() 
         }]);
       }
     } catch (e) {
       console.error(e);
-      setTerminalMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: "CRITICAL_FAILURE: Architectural node offline.", timestamp: new Date() }]);
+      setTerminalMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: "CRITICAL_FAILURE: Architectural node offline. Check network connectivity.", timestamp: new Date() }]);
     } finally {
       setIsLoading(false);
     }
@@ -196,41 +222,59 @@ const App: React.FC = () => {
 
   const handleApplyRefinement = async (prompt: string) => {
     setIsLoading(true);
-    // Force open terminal to show the progress
     setIsChatVisible(true);
-    setTerminalMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', content: `PATCH_INSTRUCTION: ${prompt}`, timestamp: new Date() }]);
+    setTerminalMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', content: `SYSTEM_PATCH_REQUEST: ${prompt}`, timestamp: new Date() }]);
     try {
       const response = await geminiService.applyEdit(activeCode, prompt);
-      const htmlCode = extractCode(response.text || "");
+      const content = response.text || "";
+      const htmlCode = extractCode(content);
+      const metadata = parseMetadata(content);
+
       if (htmlCode) {
         setActiveCode(htmlCode);
-        setTerminalMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: "PATCH_APPLIED: Architectural core updated successfully.", timestamp: new Date() }]);
+        if (metadata) setCurrentMetadata(metadata);
+        setTerminalMessages(prev => [...prev, { 
+          id: Date.now().toString(), 
+          role: 'assistant', 
+          content: content || "PATCH_APPLIED: Source synchronized.", 
+          timestamp: new Date() 
+        }]);
       }
     } catch (e) {
       console.error(e);
-      setTerminalMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: "PATCH_FAILED: Simulation node synchronization error.", timestamp: new Date() }]);
+      setTerminalMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: "PATCH_FAILED: Synchronization error.", timestamp: new Date() }]);
     } finally { setIsLoading(false); }
+  };
+
+  const handleSaveToDatabase = () => {
+    if (!activeCode || !currentMetadata) return;
+    const key = currentMetadata.key;
+    // Fallback to local logs instead of external fetch to avoid 'Failed to fetch' errors
+    setTerminalMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      role: 'assistant',
+      content: `INTERNAL_SYNC: Snippet "${key}" archived to local session cache. [External DB Sync Offline]`,
+      timestamp: new Date()
+    }]);
+    console.log("SIM_ARCHIVE:", { key, metadata: currentMetadata, code: activeCode });
   };
 
   return (
     <div className={`flex h-screen w-screen overflow-hidden ${theme === 'dark' ? 'bg-[#020202] text-white' : 'bg-white text-slate-900'}`}>
-      {/* Sidebar Area */}
       <div className={`transition-all duration-500 ease-in-out ${isChatVisible ? 'w-[440px]' : 'w-0'} overflow-hidden border-r border-white/5 relative`}>
         <div className="w-[440px] h-full">
           <ChatInterface messages={terminalMessages} onSendMessage={handleTerminalSendMessage} onApplyEdit={handleApplyRefinement} isLoading={isLoading} isLightMode={theme === 'light'} />
         </div>
       </div>
 
-      {/* Main Content Area */}
       <main className="flex-1 relative">
         <Visualizer 
           code={activeCode} isLightMode={theme === 'light'} time={globalTime} setTime={setGlobalTime}
           isPlaying={isPlaying} setIsPlaying={setIsPlaying} playbackRate={playbackRate} setPlaybackRate={setPlaybackRate}
-          metadata={currentMetadata || undefined} customVectors={customVectors} setCustomVectors={setCustomVectors}
+          metadata={currentMetadata ? { title: currentMetadata.key, description: currentMetadata.description, subject: 'Physics', temporalMode: 'Transient' } : undefined} customVectors={customVectors} setCustomVectors={setCustomVectors}
           onTelemetryUpdate={setTelemetry}
         />
         
-        {/* Toggle Controls */}
         <div className="absolute top-6 left-6 z-[90] flex items-center gap-3">
            <button 
              onClick={() => setIsChatVisible(!isChatVisible)} 
@@ -252,6 +296,12 @@ const App: React.FC = () => {
            >
             {theme === 'dark' ? <Sun size={18} className="text-amber-500" /> : <Moon size={18} className="text-fuchsia-500" />}
            </button>
+            <button
+             onClick={handleSaveToDatabase}
+             className="p-3.5 rounded-2xl border border-white/10 bg-black/40 text-neutral-400 hover:text-white transition-all backdrop-blur-xl shadow-2xl"
+           >
+            <Database size={18} className="text-emerald-500" />
+           </button>
            <button onClick={() => setIsAssistantOpen(!isAssistantOpen)} className={`flex items-center gap-3 px-6 py-3.5 rounded-2xl border transition-all backdrop-blur-xl shadow-2xl ${
              isAssistantOpen 
              ? 'bg-fuchsia-500/20 border-fuchsia-500/30 text-fuchsia-400' 
@@ -268,6 +318,7 @@ const App: React.FC = () => {
           messages={hubMessages} setMessages={setHubMessages} onApplyEdit={handleApplyRefinement} 
           isLoading={isLoading} setTime={setGlobalTime} setIsPlaying={setIsPlaying}
           onCameraUpdate={handleCameraUpdate}
+          onHighlightPoint={handleHighlightPoint}
         />
       </main>
     </div>

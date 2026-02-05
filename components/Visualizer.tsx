@@ -210,17 +210,69 @@ const Visualizer: React.FC<VisualizerProps> = ({
                   gsap.to(controls.target, { x: target.x, y: target.y, z: target.z, duration: 1.5, ease: "power2.inOut", onUpdate: () => controls.update() });
                 }
               }
+              if (event.data?.type === 'SET_POI') {
+                const { position } = event.data;
+                if (window.showPOI) window.showPOI(position);
+              }
             });
+
+            window.showPOI = (pos) => {
+              const scene = window.THREE_SCENE;
+              const THREE = window.THREE_INSTANCE;
+              if (!scene || !THREE) return;
+              
+              if (window.activePOI) {
+                scene.remove(window.activePOI);
+              }
+
+              const dir = new THREE.Vector3(0, -1, 0);
+              const origin = new THREE.Vector3(pos.x, pos.y + 2, pos.z);
+              const length = 1.2;
+              const color = 0x00ffff;
+              const headLength = 0.4;
+              const headWidth = 0.3;
+
+              const arrowHelper = new THREE.ArrowHelper(dir, origin, length, color, headLength, headWidth);
+              arrowHelper.line.material = new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.8 });
+              arrowHelper.cone.material = new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.8 });
+              
+              scene.add(arrowHelper);
+              window.activePOI = arrowHelper;
+
+              gsap.to(arrowHelper.position, {
+                y: "-=0.5",
+                duration: 0.6,
+                repeat: 7,
+                yoyo: true,
+                ease: "sine.inOut",
+                onComplete: () => {
+                  gsap.to([arrowHelper.line.material, arrowHelper.cone.material], {
+                    opacity: 0,
+                    duration: 0.5,
+                    onComplete: () => {
+                      scene.remove(arrowHelper);
+                      window.activePOI = null;
+                    }
+                  });
+                }
+              });
+            };
           })();
         </script>
       `;
       let finalCode = code;
       
-      // INJECTION: Use a more flexible search to bridge CameraMan with OrbitControls
       const orbitInitPattern = /new\s+OrbitControls\s*\(\s*camera\s*,\s*renderer\.domElement\s*\)/g;
       if (orbitInitPattern.test(finalCode)) {
         finalCode = finalCode.replace(orbitInitPattern, (match) => {
           return `(window.THREE_CONTROLS = ${match}, window.THREE_CAMERA = camera, window.THREE_CONTROLS)`;
+        });
+      }
+
+      const sceneInitPattern = /new\s+THREE\.Scene\s*\(\s*\)/g;
+      if (sceneInitPattern.test(finalCode)) {
+        finalCode = finalCode.replace(sceneInitPattern, (match) => {
+          return `(window.THREE_SCENE = ${match}, window.THREE_INSTANCE = THREE, window.THREE_SCENE)`;
         });
       }
       
