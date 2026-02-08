@@ -9,9 +9,10 @@ interface ChatInterfaceProps {
   onApplyEdit: (prompt: string) => void;
   isLoading: boolean;
   isLightMode: boolean;
+  placeholder?: string;
 }
 
-const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, onApplyEdit, isLoading, isLightMode }) => {
+const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, onApplyEdit, isLoading, isLightMode, placeholder: customPlaceholder }) => {
   const [input, setInput] = useState('');
   const [selectedImage, setSelectedImage] = useState<{ data: string, mimeType: string, preview: string } | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -232,7 +233,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, 
             onChange={(e) => setInput(e.target.value)}
             onPaste={handlePaste}
             disabled={isLoading}
-            placeholder={selectedImage ? "Describe simulation constraints..." : "Execute architectural command..."}
+            placeholder={selectedImage ? "Describe simulation constraints..." : (customPlaceholder || "Execute architectural command...")}
             className={`w-full ${themeClasses.inputBg} border ${themeClasses.inputBorder} rounded-xl py-4 px-5 pl-12 pr-14 text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500/30 transition-all ${isLightMode ? 'placeholder:text-slate-400' : 'placeholder:text-neutral-700'} disabled:opacity-50 font-medium`}
           />
           <div className="absolute left-2.5 top-1/2 -translate-y-1/2 flex items-center">

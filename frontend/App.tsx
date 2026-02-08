@@ -6,8 +6,9 @@ import ChatInterface from './components/ChatInterface';
 import Visualizer from './components/Visualizer';
 import DraggableInfoBox from './components/DraggableInfoBox';
 import SimulationAssistant from './components/SimulationAssistant';
+import FeedbackModal from './components/FeedbackModal';
 import { INITIAL_MESSAGE } from './constants';
-import { RefreshCw, MessageSquare, MessageSquareOff, Bot, Sun, Moon, Database, Terminal } from 'lucide-react';
+import { RefreshCw, MessageSquare, MessageSquareOff, Bot, Sun, Moon, Database, Terminal, BookOpen } from 'lucide-react';
 
 const REFERENCE_VISUALIZATION = `
 <!DOCTYPE html>
@@ -110,6 +111,9 @@ const App: React.FC = () => {
   const [isAssistantOpen, setIsAssistantOpen] = useState(false);
   const [customVectors, setCustomVectors] = useState<CustomVector[]>([]);
   const [telemetry, setTelemetry] = useState<Record<string, string>>({});
+  const [lastUserIntent, setLastUserIntent] = useState<string>("");
+  const [isFeedbackModalOpen, setIsFeedbackModalOpen] = useState(false);
+  const [mode, setMode] = useState<'generate' | 'library'>('generate');
 
   useEffect(() => {
     let frameId: number;
@@ -170,7 +174,61 @@ const App: React.FC = () => {
     if (isLoading) return;
     const userMsg: Message = { id: Date.now().toString(), role: 'user', content: text, timestamp: new Date() };
     setTerminalMessages(prev => [...prev, userMsg]);
+    setLastUserIntent(text);
     setIsLoading(true);
+
+    // Library Mode: fetch catalog, let Gemini pick best match by key then description.
+    // If match found, render directly. If no match, fall through to generate pipeline.
+    if (mode === 'library') {
+      console.log(`[APP] Library mode active. Fetching catalog...`);
+      let libraryHit = false;
+      try {
+        const catalogRes = await fetch(`https://letter-dvds-gender-bold.trycloudflare.com/snippets/catalog`);
+        if (catalogRes.ok) {
+          const catalog = await catalogRes.json();
+          console.log(`[APP] Catalog loaded: ${catalog.length} entries`);
+          const matchedKey = await geminiService.sendLibraryMatch(text.trim(), catalog);
+          if (matchedKey) {
+            const snippetRes = await fetch(`https://letter-dvds-gender-bold.trycloudflare.com/snippets/key/${encodeURIComponent(matchedKey)}`);
+            if (snippetRes.ok) {
+              const snippet = await snippetRes.json();
+              console.log(`[APP] Library HIT — rendering snippet "${snippet.key}"`);
+              setActiveCode(snippet.code);
+              setTerminalMessages(prev => [...prev, {
+                id: Date.now().toString(), role: 'assistant',
+                content: `LIBRARY_LOAD: Matched snippet "${snippet.key}" for intent "${text.trim()}". Rendered directly from database.`, timestamp: new Date()
+              }]);
+              libraryHit = true;
+            }
+          }
+          if (!libraryHit) {
+            console.log(`[APP] Library MISS — Gemini found no confident match`);
+            setTerminalMessages(prev => [...prev, {
+              id: Date.now().toString(), role: 'assistant',
+              content: `LIBRARY_FALLBACK: No verified snippet matches "${text.trim()}". Falling back to generate pipeline...`, timestamp: new Date()
+            }]);
+          }
+        } else {
+          console.log(`[APP] Library MISS — catalog fetch failed`);
+          setTerminalMessages(prev => [...prev, {
+            id: Date.now().toString(), role: 'assistant',
+            content: `LIBRARY_FALLBACK: Could not load catalog. Falling back to generate pipeline...`, timestamp: new Date()
+          }]);
+        }
+      } catch (e) {
+        console.warn(`[APP] Library fetch error — falling back to generate pipeline`, e);
+        setTerminalMessages(prev => [...prev, {
+          id: Date.now().toString(), role: 'assistant',
+          content: "LIBRARY_FALLBACK: Could not reach backend. Falling back to generate pipeline...", timestamp: new Date()
+        }]);
+      }
+      if (libraryHit) {
+        console.log(`[APP] Library mode complete — skipping generate pipeline`);
+        setIsLoading(false);
+        return;
+      }
+      console.log(`[APP] Library mode fallthrough → entering generate pipeline`);
+    }
 
     try {
       const history = terminalMessages.slice(-5).map(m => ({
@@ -178,10 +236,40 @@ const App: React.FC = () => {
         parts: [{ text: m.content }]
       }));
 
-      const response = await geminiService.sendArchitectMessage(history, text, activeCode, image);
+      // Step 1: Generate and validate a scene plan, then explain it.
+      console.log(`[APP] Step 1: Starting planner pipeline...`);
+      let planResult: { canonicalScenePlan: any; explanation: string } | null = null;
+      try {
+        planResult = await geminiService.generateValidatedScenePlan(text);
+        setTerminalMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: `SCENE_PLAN_VALIDATED: ${JSON.stringify(planResult.canonicalScenePlan.parameters)}\n\nEXPLANATION: ${planResult.explanation}`,
+          timestamp: new Date()
+        }]);
+      } catch (e: any) {
+        console.error("Planner failed:", e.message);
+        setTerminalMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: `PLANNER_BYPASS: ${e.message}. Proceeding with intent only.`,
+          timestamp: new Date()
+        }]);
+      }
+
+      // Step 2: Pass intent + validated scene plan + explanation to the architect.
+      console.log(`[APP] Step 2: Sending to architect. Plan available: ${!!planResult}`);
+      const architectMessage = planResult
+        ? `${text}\n\nVALIDATED_SCENE_PLAN:\n${JSON.stringify(planResult.canonicalScenePlan, null, 2)}\n\nSCENE_EXPLANATION:\n${planResult.explanation}`
+        : text;
+
+      console.log(`[APP] Calling architect with message (${architectMessage.length} chars)...`);
+      const response = await geminiService.sendArchitectMessage(history, architectMessage, activeCode, image);
       const content = response.text || "";
+      console.log(`[APP] Architect responded (${content.length} chars)`);
       
       if (content.includes("CONCEPTUAL_QUERY:")) {
+        console.log(`[APP] Conceptual query detected — aborting pipeline`);
         setTerminalMessages(prev => [...prev, {
           id: Date.now().toString(),
           role: 'assistant',
@@ -194,16 +282,36 @@ const App: React.FC = () => {
 
       const htmlCode = extractCode(content);
       const metadata = parseMetadata(content);
+      console.log(`[APP] Extraction — code: ${!!htmlCode} (${htmlCode?.length || 0} chars), metadata: ${!!metadata}`);
 
       if (htmlCode) {
         setActiveCode(htmlCode);
         if (metadata) setCurrentMetadata(metadata);
-        setTerminalMessages(prev => [...prev, { 
-          id: Date.now().toString(), 
-          role: 'assistant', 
-          content: content, 
-          timestamp: new Date() 
+        setTerminalMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: content,
+          timestamp: new Date()
         }]);
+
+        // Auto-validate artifact
+        if (currentMetadata) {
+          try {
+            await fetch("https://letter-dvds-gender-bold.trycloudflare.com/artifacts/validate", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                key: currentMetadata.key,
+                description: currentMetadata.description,
+                code: htmlCode,
+                tags: currentMetadata.tags,
+                intent: text,
+              }),
+            });
+          } catch (e) {
+            console.error("Validation failed:", e);
+          }
+        }
       } else {
         setTerminalMessages(prev => [...prev, { 
           id: Date.now().toString(), 
@@ -223,6 +331,7 @@ const App: React.FC = () => {
   const handleApplyRefinement = async (prompt: string) => {
     setIsLoading(true);
     setIsChatVisible(true);
+    setLastUserIntent(prompt);
     setTerminalMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', content: `SYSTEM_PATCH_REQUEST: ${prompt}`, timestamp: new Date() }]);
     try {
       const response = await geminiService.applyEdit(activeCode, prompt);
@@ -246,24 +355,60 @@ const App: React.FC = () => {
     } finally { setIsLoading(false); }
   };
 
-  const handleSaveToDatabase = () => {
+  const handleFeedbackSubmit = async (feedback: 'good' | 'bad', reason: string) => {
     if (!activeCode || !currentMetadata) return;
-    const key = currentMetadata.key;
-    // Fallback to local logs instead of external fetch to avoid 'Failed to fetch' errors
-    setTerminalMessages(prev => [...prev, {
-      id: Date.now().toString(),
-      role: 'assistant',
-      content: `INTERNAL_SYNC: Snippet "${key}" archived to local session cache. [External DB Sync Offline]`,
-      timestamp: new Date()
-    }]);
-    console.log("SIM_ARCHIVE:", { key, metadata: currentMetadata, code: activeCode });
+
+    try {
+      const res = await fetch(
+        "https://letter-dvds-gender-bold.trycloudflare.com/artifacts/feedback",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            key: currentMetadata.key,
+            description: currentMetadata.description,
+            code: activeCode,
+            tags: currentMetadata.tags,
+            intent: lastUserIntent,
+            feedback,
+            reason,
+          }),
+        }
+      );
+
+      if (res.ok) {
+        const data = await res.json();
+        setTerminalMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: `FEEDBACK_RECORDED: Quality marked as "${feedback}". ${feedback === 'good' ? `Snippet "${currentMetadata.key}" saved to library.` : 'Artifact logged for analysis.'} Hash: ${data.sceneHash?.substring(0, 8)}...`,
+          timestamp: new Date()
+        }]);
+      } else {
+        const err = await res.json();
+        setTerminalMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: `FEEDBACK_FAILED: ${err.error || "Unknown error"}`,
+          timestamp: new Date()
+        }]);
+      }
+    } catch (e) {
+      console.error(e);
+      setTerminalMessages(prev => [...prev, {
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: "FEEDBACK_FAILED: Could not reach backend.",
+        timestamp: new Date()
+      }]);
+    }
   };
 
   return (
     <div className={`flex h-screen w-screen overflow-hidden ${theme === 'dark' ? 'bg-[#020202] text-white' : 'bg-white text-slate-900'}`}>
       <div className={`transition-all duration-500 ease-in-out ${isChatVisible ? 'w-[440px]' : 'w-0'} overflow-hidden border-r border-white/5 relative`}>
         <div className="w-[440px] h-full">
-          <ChatInterface messages={terminalMessages} onSendMessage={handleTerminalSendMessage} onApplyEdit={handleApplyRefinement} isLoading={isLoading} isLightMode={theme === 'light'} />
+          <ChatInterface messages={terminalMessages} onSendMessage={handleTerminalSendMessage} onApplyEdit={handleApplyRefinement} isLoading={isLoading} isLightMode={theme === 'light'} placeholder={mode === 'library' ? 'Enter snippet key...' : undefined} />
         </div>
       </div>
 
@@ -290,14 +435,25 @@ const App: React.FC = () => {
         </div>
 
         <div className="absolute top-6 right-6 flex items-center gap-3 z-[90]">
-           <button 
-             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} 
+           <button
+             onClick={() => setMode(mode === 'generate' ? 'library' : 'generate')}
+             className={`flex items-center gap-3 px-6 py-3.5 rounded-2xl border transition-all backdrop-blur-xl shadow-2xl ${
+               mode === 'library'
+               ? 'bg-orange-500/20 border-orange-500/30 text-orange-400'
+               : 'bg-black/40 border-white/10 text-neutral-400 hover:text-white'
+             }`}
+           >
+            <BookOpen size={18} />
+            <span className="font-bold uppercase tracking-widest text-[10px]">{mode === 'library' ? 'Library Mode' : 'Generate Mode'}</span>
+           </button>
+           <button
+             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
              className={`p-3.5 rounded-2xl border border-white/10 bg-black/40 text-neutral-400 hover:text-white transition-all backdrop-blur-xl shadow-2xl`}
            >
             {theme === 'dark' ? <Sun size={18} className="text-amber-500" /> : <Moon size={18} className="text-fuchsia-500" />}
            </button>
             <button
-             onClick={handleSaveToDatabase}
+             onClick={() => setIsFeedbackModalOpen(true)}
              className="p-3.5 rounded-2xl border border-white/10 bg-black/40 text-neutral-400 hover:text-white transition-all backdrop-blur-xl shadow-2xl"
            >
             <Database size={18} className="text-emerald-500" />
@@ -312,15 +468,22 @@ const App: React.FC = () => {
           </button>
         </div>
         
-        <SimulationAssistant 
-          isOpen={isAssistantOpen} activeCode={activeCode} metadata={currentMetadata} 
-          customVectors={customVectors} onClose={() => setIsAssistantOpen(false)} isLightMode={theme === 'light'} 
-          messages={hubMessages} setMessages={setHubMessages} onApplyEdit={handleApplyRefinement} 
+        <SimulationAssistant
+          isOpen={isAssistantOpen} activeCode={activeCode} metadata={currentMetadata}
+          customVectors={customVectors} onClose={() => setIsAssistantOpen(false)} isLightMode={theme === 'light'}
+          messages={hubMessages} setMessages={setHubMessages} onApplyEdit={handleApplyRefinement}
           isLoading={isLoading} setTime={setGlobalTime} setIsPlaying={setIsPlaying}
           onCameraUpdate={handleCameraUpdate}
           onHighlightPoint={handleHighlightPoint}
         />
       </main>
+
+      <FeedbackModal
+        isOpen={isFeedbackModalOpen}
+        onClose={() => setIsFeedbackModalOpen(false)}
+        onSubmit={handleFeedbackSubmit}
+        isLightMode={theme === 'light'}
+      />
     </div>
   );
 };
