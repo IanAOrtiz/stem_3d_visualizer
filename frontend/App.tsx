@@ -1,12 +1,13 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Message, Subject, TemporalMode, CustomVector } from './types';
-import { geminiService } from './services/gemini';
+import * as api from './services/api';
 import ChatInterface from './components/ChatInterface';
 import Visualizer from './components/Visualizer';
 import DraggableInfoBox from './components/DraggableInfoBox';
 import SimulationAssistant from './components/SimulationAssistant';
 import FeedbackModal from './components/FeedbackModal';
+import ParameterControlsPanel from './components/ParameterControlsPanel';
 import { INITIAL_MESSAGE } from './constants';
 import { RefreshCw, MessageSquare, MessageSquareOff, Bot, Sun, Moon, Database, Terminal, BookOpen } from 'lucide-react';
 
@@ -111,9 +112,12 @@ const App: React.FC = () => {
   const [isAssistantOpen, setIsAssistantOpen] = useState(false);
   const [customVectors, setCustomVectors] = useState<CustomVector[]>([]);
   const [telemetry, setTelemetry] = useState<Record<string, string>>({});
-  const [lastUserIntent, setLastUserIntent] = useState<string>("");
   const [isFeedbackModalOpen, setIsFeedbackModalOpen] = useState(false);
   const [mode, setMode] = useState<'generate' | 'library'>('generate');
+  const [currentScenePlan, setCurrentScenePlan] = useState<any | null>(null);
+  const [currentSceneHash, setCurrentSceneHash] = useState<string | null>(null);
+  const visualizerIframeRef = useRef<HTMLIFrameElement>(null);
+  const architectAbortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     let frameId: number;
@@ -129,6 +133,13 @@ const App: React.FC = () => {
     frameId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(frameId);
   }, [isPlaying, playbackRate]);
+
+  useEffect(() => {
+    return () => {
+      architectAbortControllerRef.current?.abort();
+      architectAbortControllerRef.current = null;
+    };
+  }, []);
 
   const handleCameraUpdate = (cameraData: { position: { x: number, y: number, z: number }, target: { x: number, y: number, z: number } }) => {
     const iframe = document.querySelector('iframe');
@@ -174,49 +185,36 @@ const App: React.FC = () => {
     if (isLoading) return;
     const userMsg: Message = { id: Date.now().toString(), role: 'user', content: text, timestamp: new Date() };
     setTerminalMessages(prev => [...prev, userMsg]);
-    setLastUserIntent(text);
     setIsLoading(true);
+    const controller = new AbortController();
+    architectAbortControllerRef.current = controller;
 
-    // Library Mode: fetch catalog, let Gemini pick best match by key then description.
+    // Library Mode: Mastra library workflow handles catalog fetch, match, and snippet retrieval.
     // If match found, render directly. If no match, fall through to generate pipeline.
     if (mode === 'library') {
-      console.log(`[APP] Library mode active. Fetching catalog...`);
+      console.log(`[APP] Library mode active. Running library workflow...`);
       let libraryHit = false;
       try {
-        const catalogRes = await fetch(`https://letter-dvds-gender-bold.trycloudflare.com/snippets/catalog`);
-        if (catalogRes.ok) {
-          const catalog = await catalogRes.json();
-          console.log(`[APP] Catalog loaded: ${catalog.length} entries`);
-          const matchedKey = await geminiService.sendLibraryMatch(text.trim(), catalog);
-          if (matchedKey) {
-            const snippetRes = await fetch(`https://letter-dvds-gender-bold.trycloudflare.com/snippets/key/${encodeURIComponent(matchedKey)}`);
-            if (snippetRes.ok) {
-              const snippet = await snippetRes.json();
-              console.log(`[APP] Library HIT — rendering snippet "${snippet.key}"`);
-              setActiveCode(snippet.code);
-              setTerminalMessages(prev => [...prev, {
-                id: Date.now().toString(), role: 'assistant',
-                content: `LIBRARY_LOAD: Matched snippet "${snippet.key}" for intent "${text.trim()}". Rendered directly from database.`, timestamp: new Date()
-              }]);
-              libraryHit = true;
-            }
-          }
-          if (!libraryHit) {
-            console.log(`[APP] Library MISS — Gemini found no confident match`);
-            setTerminalMessages(prev => [...prev, {
-              id: Date.now().toString(), role: 'assistant',
-              content: `LIBRARY_FALLBACK: No verified snippet matches "${text.trim()}". Falling back to generate pipeline...`, timestamp: new Date()
-            }]);
-          }
-        } else {
-          console.log(`[APP] Library MISS — catalog fetch failed`);
+        const result = await api.libraryLookup(text.trim(), controller.signal);
+        if (result.found && result.code) {
+          console.log(`[APP] Library HIT — rendering snippet "${result.key}"`);
+          setActiveCode(result.code);
+          setCurrentSceneHash(result.sceneHash || null);
+          setCurrentScenePlan(null);
           setTerminalMessages(prev => [...prev, {
             id: Date.now().toString(), role: 'assistant',
-            content: `LIBRARY_FALLBACK: Could not load catalog. Falling back to generate pipeline...`, timestamp: new Date()
+            content: `LIBRARY_LOAD: Matched snippet "${result.key}" for intent "${text.trim()}". Rendered directly from database.${result.sceneHash ? ` Scene hash: ${result.sceneHash.substring(0, 8)}...` : ''}`, timestamp: new Date()
+          }]);
+          libraryHit = true;
+        } else {
+          console.log(`[APP] Library MISS — ${result.reason}`);
+          setTerminalMessages(prev => [...prev, {
+            id: Date.now().toString(), role: 'assistant',
+            content: `LIBRARY_FALLBACK: ${result.reason}. Falling back to generate pipeline...`, timestamp: new Date()
           }]);
         }
       } catch (e) {
-        console.warn(`[APP] Library fetch error — falling back to generate pipeline`, e);
+        console.warn(`[APP] Library workflow error — falling back to generate pipeline`, e);
         setTerminalMessages(prev => [...prev, {
           id: Date.now().toString(), role: 'assistant',
           content: "LIBRARY_FALLBACK: Could not reach backend. Falling back to generate pipeline...", timestamp: new Date()
@@ -232,121 +230,163 @@ const App: React.FC = () => {
 
     try {
       const history = terminalMessages.slice(-5).map(m => ({
-        role: m.role === 'user' ? 'user' as const : 'model' as const,
-        parts: [{ text: m.content }]
+        role: m.role === 'user' ? 'user' : 'model',
+        text: m.content,
       }));
 
-      // Step 1: Generate and validate a scene plan, then explain it.
-      console.log(`[APP] Step 1: Starting planner pipeline...`);
-      let planResult: { canonicalScenePlan: any; explanation: string } | null = null;
-      try {
-        planResult = await geminiService.generateValidatedScenePlan(text);
+      // Full generate pipeline via Mastra workflow (plan → validate → explain → coherence → architect)
+      console.log(`[APP] Starting generate workflow...`);
+      const result = await api.generateVisualization(text, activeCode, history, image, controller.signal);
+      console.log(`[APP] Generate workflow complete. Code: ${result.code?.length || 0} chars`);
+
+      if (result.scenePlan) {
+        setCurrentScenePlan(result.scenePlan);
         setTerminalMessages(prev => [...prev, {
           id: Date.now().toString(),
           role: 'assistant',
-          content: `SCENE_PLAN_VALIDATED: ${JSON.stringify(planResult.canonicalScenePlan.parameters)}\n\nEXPLANATION: ${planResult.explanation}`,
-          timestamp: new Date()
-        }]);
-      } catch (e: any) {
-        console.error("Planner failed:", e.message);
-        setTerminalMessages(prev => [...prev, {
-          id: Date.now().toString(),
-          role: 'assistant',
-          content: `PLANNER_BYPASS: ${e.message}. Proceeding with intent only.`,
+          content: `SCENE_PLAN_VALIDATED: ${JSON.stringify(result.scenePlan.parameters)}\n\nEXPLANATION: ${result.explanation}`,
           timestamp: new Date()
         }]);
       }
 
-      // Step 2: Pass intent + validated scene plan + explanation to the architect.
-      console.log(`[APP] Step 2: Sending to architect. Plan available: ${!!planResult}`);
-      const architectMessage = planResult
-        ? `${text}\n\nVALIDATED_SCENE_PLAN:\n${JSON.stringify(planResult.canonicalScenePlan, null, 2)}\n\nSCENE_EXPLANATION:\n${planResult.explanation}`
-        : text;
+      const code = result.code;
+      if (code && !code.includes("CONCEPTUAL_QUERY:")) {
+        setActiveCode(code);
+        if (result.metadata) setCurrentMetadata(result.metadata);
+        setTerminalMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: `ARCHITECT_OUTPUT: Code generated (${code.length} chars).`,
+          timestamp: new Date()
+        }]);
 
-      console.log(`[APP] Calling architect with message (${architectMessage.length} chars)...`);
-      const response = await geminiService.sendArchitectMessage(history, architectMessage, activeCode, image);
-      const content = response.text || "";
-      console.log(`[APP] Architect responded (${content.length} chars)`);
-      
-      if (content.includes("CONCEPTUAL_QUERY:")) {
-        console.log(`[APP] Conceptual query detected — aborting pipeline`);
+        // Auto-validate artifact
+        if (result.scenePlan) {
+          try {
+            const artifact = await api.storeArtifact({
+              scenePlan: result.scenePlan,
+              renderCode: code,
+              intent: text,
+              modelExplanation: result.explanation,
+              schemaVersion: result.scenePlan.schemaVersion || 'artifact_v1',
+              modelVersion: 'mastra_generate_pipeline_v1',
+              promptVersion: 'generate_workflow_v1',
+            });
+            if (artifact?.sceneHash) {
+              setCurrentSceneHash(artifact.sceneHash);
+            }
+          } catch (e) {
+            console.error("Validation failed:", e);
+          }
+        }
+      } else if (code?.includes("CONCEPTUAL_QUERY:")) {
         setTerminalMessages(prev => [...prev, {
           id: Date.now().toString(),
           role: 'assistant',
           content: "LOG: Input detected as conceptual. Architectural refinement aborted. Consult the Spaide Assistant for scientific analysis.",
           timestamp: new Date()
         }]);
-        setIsLoading(false);
-        return;
-      }
-
-      const htmlCode = extractCode(content);
-      const metadata = parseMetadata(content);
-      console.log(`[APP] Extraction — code: ${!!htmlCode} (${htmlCode?.length || 0} chars), metadata: ${!!metadata}`);
-
-      if (htmlCode) {
-        setActiveCode(htmlCode);
-        if (metadata) setCurrentMetadata(metadata);
+      } else {
         setTerminalMessages(prev => [...prev, {
           id: Date.now().toString(),
           role: 'assistant',
-          content: content,
+          content: "ERROR: Extraction failure. The architectural core failed to resolve a valid Three.js payload.",
           timestamp: new Date()
-        }]);
-
-        // Auto-validate artifact
-        if (currentMetadata) {
-          try {
-            await fetch("https://letter-dvds-gender-bold.trycloudflare.com/artifacts/validate", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                key: currentMetadata.key,
-                description: currentMetadata.description,
-                code: htmlCode,
-                tags: currentMetadata.tags,
-                intent: text,
-              }),
-            });
-          } catch (e) {
-            console.error("Validation failed:", e);
-          }
-        }
-      } else {
-        setTerminalMessages(prev => [...prev, { 
-          id: Date.now().toString(), 
-          role: 'assistant', 
-          content: content || "ERROR: Extraction failure. The architectural core failed to resolve a valid Three.js payload.", 
-          timestamp: new Date() 
         }]);
       }
     } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') {
+        setTerminalMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: 'ARCHITECT_CANCELLED: Generation pipeline was cancelled.',
+          timestamp: new Date()
+        }]);
+        return;
+      }
       console.error(e);
       setTerminalMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: "CRITICAL_FAILURE: Architectural node offline. Check network connectivity.", timestamp: new Date() }]);
     } finally {
+      architectAbortControllerRef.current = null;
       setIsLoading(false);
     }
   };
 
+  const handleCancelArchitectProcess = useCallback(() => {
+    architectAbortControllerRef.current?.abort();
+    architectAbortControllerRef.current = null;
+  }, []);
+
   const handleApplyRefinement = async (prompt: string) => {
     setIsLoading(true);
     setIsChatVisible(true);
-    setLastUserIntent(prompt);
     setTerminalMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', content: `SYSTEM_PATCH_REQUEST: ${prompt}`, timestamp: new Date() }]);
     try {
-      const response = await geminiService.applyEdit(activeCode, prompt);
-      const content = response.text || "";
-      const htmlCode = extractCode(content);
-      const metadata = parseMetadata(content);
+      if (!currentSceneHash) {
+        setTerminalMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: 'PATCH_BLOCKED: Missing parent scene hash. Save or load a tracked artifact before applying update patches.',
+          timestamp: new Date()
+        }]);
+        return;
+      }
 
-      if (htmlCode) {
-        setActiveCode(htmlCode);
-        if (metadata) setCurrentMetadata(metadata);
-        setTerminalMessages(prev => [...prev, { 
-          id: Date.now().toString(), 
-          role: 'assistant', 
-          content: content || "PATCH_APPLIED: Source synchronized.", 
-          timestamp: new Date() 
+      const history = terminalMessages.slice(-5).map(m => ({
+        role: m.role === 'user' ? 'user' : 'model',
+        text: m.content,
+      }));
+
+      const result = await api.updateVisualization(
+        prompt,
+        currentSceneHash,
+        activeCode,
+        history,
+        false,
+      );
+      const code = result.code;
+
+      if (result.scenePlan) {
+        setCurrentScenePlan(result.scenePlan);
+      }
+
+      if (code && !code.includes("CONCEPTUAL_QUERY:")) {
+        setActiveCode(code);
+        if (result.metadata) setCurrentMetadata(result.metadata);
+
+        try {
+          if (result.scenePlan) {
+            const artifact = await api.storeArtifact({
+              scenePlan: result.scenePlan,
+              parentSceneHash: result.parentSceneHash || currentSceneHash,
+              renderCode: code,
+              intent: prompt,
+              modelExplanation: result.explanation || "refinement_edit",
+              schemaVersion: result.scenePlan.schemaVersion || 'artifact_v1',
+              modelVersion: 'mastra_update_workflow_v1',
+              promptVersion: 'refinement_update_workflow_v1',
+              updateClassification: result.updateClassification,
+            });
+            if (artifact?.sceneHash) {
+              setCurrentSceneHash(artifact.sceneHash);
+            }
+          }
+        } catch (e) {
+          console.error("Artifact store failed on refinement:", e);
+        }
+
+        setTerminalMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: `PATCH_APPLIED: Refinement executed via update workflow (${result.updateClassification}).\n\nEXPLANATION: ${result.explanation || 'No explanation returned.'}`,
+          timestamp: new Date()
+        }]);
+      } else {
+        setTerminalMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: "PATCH_FAILED: Refinement did not produce executable visualization code.",
+          timestamp: new Date()
         }]);
       }
     } catch (e) {
@@ -359,38 +399,121 @@ const App: React.FC = () => {
     if (!activeCode || !currentMetadata) return;
 
     try {
-      const res = await fetch(
-        "https://letter-dvds-gender-bold.trycloudflare.com/artifacts/feedback",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            key: currentMetadata.key,
-            description: currentMetadata.description,
-            code: activeCode,
-            tags: currentMetadata.tags,
-            intent: lastUserIntent,
-            feedback,
-            reason,
-          }),
-        }
+      const data = await api.submitFeedback({
+        sceneHash: currentSceneHash || undefined,
+        scenePlan: currentScenePlan || undefined,
+        renderCode: activeCode,
+        schemaVersion: currentScenePlan?.schemaVersion || 'artifact_v1',
+        key: currentMetadata.key,
+        description: currentMetadata.description,
+        code: activeCode,
+        tags: currentMetadata.tags,
+        feedback,
+        reason,
+      });
+      setTerminalMessages(prev => [...prev, {
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: `FEEDBACK_RECORDED: Quality marked as "${feedback}". ${feedback === 'good' ? `Snippet "${currentMetadata.key}" saved to library.` : 'Artifact logged for analysis.'} Hash: ${data.sceneHash?.substring(0, 8)}...`,
+        timestamp: new Date()
+      }]);
+    } catch (e: any) {
+      console.error(e);
+      setTerminalMessages(prev => [...prev, {
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: `FEEDBACK_FAILED: ${e.message || "Could not reach backend."}`,
+        timestamp: new Date()
+      }]);
+    }
+  };
+
+  const handleCommitParameterPatch = async (parameterPatch: Record<string, number>) => {
+    if (isLoading) return;
+    if (!currentSceneHash || !currentScenePlan) {
+      setTerminalMessages(prev => [...prev, {
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: 'PARAM_PATCH_BLOCKED: Missing active scene hash or scene plan.',
+        timestamp: new Date(),
+      }]);
+      return;
+    }
+
+    const patchEntries = Object.entries(parameterPatch);
+    if (patchEntries.length === 0) return;
+
+    setIsLoading(true);
+
+    const patchSummary = patchEntries
+      .map(([k, v]) => `${k}=${typeof v === 'number' ? v.toFixed(4) : String(v)}`)
+      .join(', ');
+    const intent = `Apply parameter patch: ${patchSummary}`;
+
+    setTerminalMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      role: 'user',
+      content: `PARAM_PATCH_REQUEST: ${patchSummary}`,
+      timestamp: new Date(),
+    }]);
+
+    try {
+      const history = terminalMessages.slice(-5).map(m => ({
+        role: m.role === 'user' ? 'user' : 'model',
+        text: m.content,
+      }));
+
+      const result = await api.updateVisualization(
+        intent,
+        currentSceneHash,
+        activeCode,
+        history,
+        false,
+        parameterPatch,
       );
 
-      if (res.ok) {
-        const data = await res.json();
+      const code = result.code;
+      if (result.scenePlan) {
+        setCurrentScenePlan(result.scenePlan);
+      }
+
+      if (code && !code.includes('CONCEPTUAL_QUERY:')) {
+        setActiveCode(code);
+        if (result.metadata) setCurrentMetadata(result.metadata);
+
+        try {
+          if (result.scenePlan) {
+            const artifact = await api.storeArtifact({
+              scenePlan: result.scenePlan,
+              parentSceneHash: result.parentSceneHash || currentSceneHash,
+              renderCode: code,
+              intent,
+              modelExplanation: result.explanation || 'parameter_patch',
+              schemaVersion: result.scenePlan.schemaVersion || 'artifact_v1',
+              modelVersion: 'mastra_update_workflow_v1',
+              promptVersion: 'parameter_controls_commit_v1',
+              updateClassification: result.updateClassification,
+            });
+            if (artifact?.sceneHash) {
+              setCurrentSceneHash(artifact.sceneHash);
+            }
+          }
+        } catch (e) {
+          console.error('Artifact store failed on parameter patch:', e);
+        }
+
         setTerminalMessages(prev => [...prev, {
           id: Date.now().toString(),
           role: 'assistant',
-          content: `FEEDBACK_RECORDED: Quality marked as "${feedback}". ${feedback === 'good' ? `Snippet "${currentMetadata.key}" saved to library.` : 'Artifact logged for analysis.'} Hash: ${data.sceneHash?.substring(0, 8)}...`,
-          timestamp: new Date()
+          content: `PARAM_PATCH_APPLIED: ${patchSummary}\n\nUpdate path: ${result.updateClassification}`,
+          timestamp: new Date(),
         }]);
       } else {
-        const err = await res.json();
         setTerminalMessages(prev => [...prev, {
           id: Date.now().toString(),
           role: 'assistant',
-          content: `FEEDBACK_FAILED: ${err.error || "Unknown error"}`,
-          timestamp: new Date()
+          content: 'PARAM_PATCH_FAILED: Update workflow did not return executable code.',
+          timestamp: new Date(),
         }]);
       }
     } catch (e) {
@@ -398,9 +521,11 @@ const App: React.FC = () => {
       setTerminalMessages(prev => [...prev, {
         id: Date.now().toString(),
         role: 'assistant',
-        content: "FEEDBACK_FAILED: Could not reach backend.",
-        timestamp: new Date()
+        content: 'PARAM_PATCH_FAILED: Could not apply parameter patch.',
+        timestamp: new Date(),
       }]);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -408,16 +533,26 @@ const App: React.FC = () => {
     <div className={`flex h-screen w-screen overflow-hidden ${theme === 'dark' ? 'bg-[#020202] text-white' : 'bg-white text-slate-900'}`}>
       <div className={`transition-all duration-500 ease-in-out ${isChatVisible ? 'w-[440px]' : 'w-0'} overflow-hidden border-r border-white/5 relative`}>
         <div className="w-[440px] h-full">
-          <ChatInterface messages={terminalMessages} onSendMessage={handleTerminalSendMessage} onApplyEdit={handleApplyRefinement} isLoading={isLoading} isLightMode={theme === 'light'} placeholder={mode === 'library' ? 'Enter snippet key...' : undefined} />
+          <ChatInterface
+            messages={terminalMessages}
+            onSendMessage={handleTerminalSendMessage}
+            onApplyEdit={handleApplyRefinement}
+            onCancelProcess={handleCancelArchitectProcess}
+            isLoading={isLoading}
+            isLightMode={theme === 'light'}
+            placeholder={mode === 'library' ? 'Enter snippet key...' : undefined}
+          />
         </div>
       </div>
 
       <main className="flex-1 relative">
-        <Visualizer 
+        <Visualizer
           code={activeCode} isLightMode={theme === 'light'} time={globalTime} setTime={setGlobalTime}
           isPlaying={isPlaying} setIsPlaying={setIsPlaying} playbackRate={playbackRate} setPlaybackRate={setPlaybackRate}
           metadata={currentMetadata ? { title: currentMetadata.key, description: currentMetadata.description, subject: 'Physics', temporalMode: 'Transient' } : undefined} customVectors={customVectors} setCustomVectors={setCustomVectors}
           onTelemetryUpdate={setTelemetry}
+          iframeRef={visualizerIframeRef}
+          initialParams={currentScenePlan?.parameters}
         />
         
         <div className="absolute top-6 left-6 z-[90] flex items-center gap-3">
@@ -475,6 +610,14 @@ const App: React.FC = () => {
           isLoading={isLoading} setTime={setGlobalTime} setIsPlaying={setIsPlaying}
           onCameraUpdate={handleCameraUpdate}
           onHighlightPoint={handleHighlightPoint}
+        />
+
+        <ParameterControlsPanel
+          scenePlan={currentScenePlan}
+          isLightMode={theme === 'light'}
+          isBusy={isLoading}
+          iframeRef={visualizerIframeRef}
+          onCommit={handleCommitParameterPatch}
         />
       </main>
 

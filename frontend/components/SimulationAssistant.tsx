@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { X, GripVertical, Send, Loader2, Eye, Zap, SlidersHorizontal, Activity, GraduationCap, Sparkles, ChevronRight, Camera } from 'lucide-react';
 import { CustomVector, Message } from '../types';
-import { geminiService } from '../services/gemini';
+import * as api from '../services/api';
 
 interface SimulationAssistantProps {
   isOpen: boolean;
@@ -41,6 +41,10 @@ const SimulationAssistant: React.FC<SimulationAssistantProps> = ({
   const [isResizing, setIsResizing] = useState(false);
   const [input, setInput] = useState('');
   const [isThinking, setIsThinking] = useState(false);
+  const [streamingMsgId, setStreamingMsgId] = useState<string | null>(null);
+  const [streamedTokens, setStreamedTokens] = useState(0);
+  const streamTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const tutorAbortControllerRef = useRef<AbortController | null>(null);
   
   const chatEndRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
@@ -56,11 +60,40 @@ const SimulationAssistant: React.FC<SimulationAssistantProps> = ({
     }
   }, []);
 
+  const startStreaming = useCallback((msgId: string, totalTokens: number) => {
+    if (streamTimerRef.current) clearInterval(streamTimerRef.current);
+    setStreamingMsgId(msgId);
+    setStreamedTokens(0);
+    streamTimerRef.current = setInterval(() => {
+      setStreamedTokens(prev => {
+        const next = prev + 2;
+        if (next >= totalTokens) {
+          clearInterval(streamTimerRef.current!);
+          streamTimerRef.current = null;
+          setTimeout(() => {
+            setStreamingMsgId(null);
+            renderMathContent();
+          }, 50);
+          return totalTokens;
+        }
+        return next;
+      });
+    }, 30);
+  }, [renderMathContent]);
+
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    const timer = setTimeout(renderMathContent, 150);
-    return () => clearTimeout(timer);
-  }, [messages, isThinking, renderMathContent]);
+    if (!streamingMsgId) {
+      const timer = setTimeout(renderMathContent, 150);
+      return () => clearTimeout(timer);
+    }
+  }, [messages, isThinking, renderMathContent, streamingMsgId]);
+
+  useEffect(() => {
+    if (streamingMsgId) {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [streamedTokens, streamingMsgId]);
 
   const startResizing = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     setIsResizing(true);
@@ -92,6 +125,32 @@ const SimulationAssistant: React.FC<SimulationAssistantProps> = ({
     };
   }, [resize, stopResizing]);
 
+  useEffect(() => {
+    return () => {
+      tutorAbortControllerRef.current?.abort();
+      tutorAbortControllerRef.current = null;
+      if (streamTimerRef.current) clearInterval(streamTimerRef.current);
+    };
+  }, []);
+
+  const isAbortError = (err: unknown) => {
+    return err instanceof DOMException && err.name === 'AbortError';
+  };
+
+  const cancelTutorRequest = useCallback(() => {
+    tutorAbortControllerRef.current?.abort();
+    tutorAbortControllerRef.current = null;
+    if (streamTimerRef.current) { clearInterval(streamTimerRef.current); streamTimerRef.current = null; }
+    setStreamingMsgId(null);
+    setIsThinking(false);
+    setMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      role: 'assistant',
+      content: 'TUTOR_CANCELLED: Response generation was cancelled.',
+      timestamp: new Date(),
+    }]);
+  }, [setMessages]);
+
   const sendMessage = async () => {
     if (!input.trim() || isThinking) return;
     const userText = input.trim();
@@ -99,71 +158,86 @@ const SimulationAssistant: React.FC<SimulationAssistantProps> = ({
     const userMsg: Message = { id: Date.now().toString(), role: 'user', content: userText, timestamp: new Date() };
     setMessages(prev => [...prev, userMsg]);
     setIsThinking(true);
+    const controller = new AbortController();
+    tutorAbortControllerRef.current = controller;
 
     try {
       const history = messages.map(m => ({
-        role: m.role === 'user' ? 'user' as const : 'model' as const,
-        parts: [{ text: m.content }]
+        role: m.role === 'user' ? 'user' : 'assistant',
+        content: m.content,
       }));
 
-      const response = await geminiService.sendTutorMessage(history, userText, activeCode);
-      
-      let textContent = "";
+      const response = await api.sendTutorMessage(history, userText, activeCode, controller.signal);
+
+      let textContent = response.text;
       let toolExecutionStatus = "";
-      
-      const parts = response.candidates?.[0]?.content?.parts || [];
-      
-      for (const part of parts) {
-        if (part.text) {
-          textContent += part.text;
-        }
-        if (part.functionCall) {
-          const fc = part.functionCall;
-          if (fc.name === 'updateSimulationTime') {
-            const { t } = fc.args as any;
-            if (typeof t === 'number') {
-              setIsPlaying(false);
-              setTime(t);
-              toolExecutionStatus += `\n\n[Demonstration: Timeline fixed at t=${t.toFixed(2)}]`;
-            }
+
+      // Process tool calls from Mastra response
+      for (const tc of response.toolCalls) {
+        if (tc.name === 'update-simulation-time') {
+          const t = tc.args.t;
+          if (typeof t === 'number') {
+            setIsPlaying(false);
+            setTime(t);
+            toolExecutionStatus += `\n\n[Demonstration: Timeline fixed at t=${t.toFixed(2)}]`;
           }
-          if (fc.name === 'adjustCamera' || fc.name === 'highlightArea') {
-            const { intent } = fc.args as any;
-            geminiService.sendCameraManMessage(intent, activeCode).then(settings => {
+        }
+        if (tc.name === 'adjust-camera' || tc.name === 'highlight-area') {
+          const intent = tc.args.intent;
+          if (tc.args.position && tc.args.target) {
+            const settings = { position: tc.args.position, target: tc.args.target };
+            if (tc.name === 'adjust-camera') onCameraUpdate(settings);
+            onHighlightPoint(settings.target);
+          } else {
+            api.sendCameraManMessage(intent, activeCode, controller.signal).then(settings => {
               if (settings) {
-                if (fc.name === 'adjustCamera') onCameraUpdate(settings);
+                if (tc.name === 'adjust-camera') onCameraUpdate(settings);
                 onHighlightPoint(settings.target);
               }
             });
-            toolExecutionStatus += fc.name === 'adjustCamera' 
-                ? `\n\n[Cinematic Reframing Triggered]` 
-                : `\n\n[Spatial Indicator Deployed]`;
           }
+          toolExecutionStatus += tc.name === 'adjust-camera'
+              ? `\n\n[Cinematic Reframing Triggered]`
+              : `\n\n[Spatial Indicator Deployed]`;
         }
       }
 
       let finalContent = textContent.trim();
       if (!finalContent && toolExecutionStatus) finalContent = "Applying requested visual adjustments.";
       finalContent += toolExecutionStatus;
-      
+
       const editMatch = finalContent.match(/\[SUGGESTED_EDIT\]([\s\S]*?)\[\/SUGGESTED_EDIT\]/i);
       let suggestedEdit: string | undefined;
       if (editMatch) {
         suggestedEdit = editMatch[1].trim();
       }
+      if (!suggestedEdit && response.suggestedEdit) {
+        suggestedEdit = response.suggestedEdit;
+      }
 
-      const assistantMsg: Message = { 
-        id: Date.now().toString(), 
-        role: 'assistant', 
-        content: finalContent, 
-        timestamp: new Date(), 
-        suggestedEdit: suggestedEdit 
+      if (response.shouldAutoApplyEdit && suggestedEdit) {
+        finalContent += `\n\n[PATCH_READY: Overseer approved. Click Execute Patch to run the refinement pipeline.]`;
+      }
+
+      const msgId = Date.now().toString();
+      const assistantMsg: Message = {
+        id: msgId,
+        role: 'assistant',
+        content: finalContent,
+        timestamp: new Date(),
+        suggestedEdit: suggestedEdit
       };
       setMessages(prev => [...prev, assistantMsg]);
+      const tokens = formatHubContent(finalContent).split(/(\s+)/);
+      startStreaming(msgId, tokens.length);
     } catch (err) {
+      if (isAbortError(err)) {
+        return;
+      }
       console.error(err);
       setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: "SYSTEM_ERROR: Scientific core logic fault.", timestamp: new Date() }]);
     } finally {
+      tutorAbortControllerRef.current = null;
       setIsThinking(false);
     }
   };
@@ -221,7 +295,11 @@ const SimulationAssistant: React.FC<SimulationAssistantProps> = ({
                   </div>
                 )}
 
-                <div className="math-container whitespace-pre-wrap leading-[1.8]">{formatHubContent(m.content)}</div>
+                <div className="math-container whitespace-pre-wrap leading-[1.8]">{
+                  streamingMsgId === m.id
+                    ? formatHubContent(m.content).split(/(\s+)/).slice(0, streamedTokens).join('')
+                    : formatHubContent(m.content)
+                }</div>
                 
                 {m.suggestedEdit && (
                   <div className="mt-5 pt-5 border-t border-fuchsia-500/20">
@@ -264,7 +342,21 @@ const SimulationAssistant: React.FC<SimulationAssistantProps> = ({
               placeholder="Query scientific core..."
               className={`w-full py-4 px-5 pr-14 text-[13px] rounded-2xl outline-none transition-all ${isLightMode ? 'bg-white border-slate-200 focus:border-fuchsia-400 shadow-inner' : 'bg-[#050505] border border-white/5 focus:border-fuchsia-500/50 text-white placeholder-neutral-700'}`}
             />
-            <button onClick={sendMessage} disabled={!input.trim() || isThinking} className={`absolute right-2 top-1/2 -translate-y-1/2 p-2.5 rounded-xl transition-all ${!input.trim() || isThinking ? 'opacity-20 text-neutral-500' : 'text-fuchsia-400 hover:bg-fuchsia-500/10 hover:text-fuchsia-300'}`}><Send size={18} /></button>
+            {isThinking ? (
+              <button
+                type="button"
+                onClick={cancelTutorRequest}
+                className={`absolute right-2 top-1/2 -translate-y-1/2 px-3 h-9 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all ${
+                  isLightMode
+                    ? 'bg-red-50 text-red-700 border border-red-200 hover:bg-red-100'
+                    : 'bg-red-500/10 text-red-300 border border-red-500/30 hover:bg-red-500/20'
+                }`}
+              >
+                Cancel
+              </button>
+            ) : (
+              <button onClick={sendMessage} disabled={!input.trim()} className={`absolute right-2 top-1/2 -translate-y-1/2 p-2.5 rounded-xl transition-all ${!input.trim() ? 'opacity-20 text-neutral-500' : 'text-fuchsia-400 hover:bg-fuchsia-500/10 hover:text-fuchsia-300'}`}><Send size={18} /></button>
+            )}
           </div>
         </div>
       </div>

@@ -1,40 +1,42 @@
 import { z } from "zod";
 import { Constraints } from "../pillars/constraints";
 import { Interval1DDomain } from "../pillars/domain";
-import { ShmEvolution } from "../pillars/evolution";
+import { DampedShmEvolution } from "../pillars/evolution";
 import { NoForcing } from "../pillars/forcing";
 import { IdealSpringMaterial } from "../pillars/material";
 import { PointMassState } from "../pillars/state";
+import type { ParameterControlSpec } from "../schemaRegistry";
 
-export const schemaId = "harmonic_oscillator" as const;
+export const schemaId = "damped_oscillator" as const;
 export const schemaVersion = "v1" as const;
 
 const PositiveFiniteNumber = z.number().finite().positive();
+const NonNegativeFiniteNumber = z.number().finite().min(0);
 const FiniteNumber = z.number().finite();
 
-export const HarmonicOscillator = z.object({
+export const DampedOscillator = z.object({
   amplitude: PositiveFiniteNumber,
   frequency: PositiveFiniteNumber,
+  dampingRatio: NonNegativeFiniteNumber,
   phase: FiniteNumber,
 }).strict();
 
-const HarmonicOscillatorAssembly = z.object({
+const DampedOscillatorAssembly = z.object({
   state: PointMassState,
   domain: Interval1DDomain,
   material: IdealSpringMaterial,
   constraints: Constraints,
   forcing: NoForcing,
-  evolution: ShmEvolution,
+  evolution: DampedShmEvolution,
 }).strict();
 
 export interface CanonicalParams {
   amplitude: number;
   frequency: number;
+  dampingRatio: number;
   phase: number;
   [key: string]: unknown;
 }
-
-import type { ParameterControlSpec } from "../schemaRegistry";
 
 export const parameterControlSpecs: ParameterControlSpec[] = [
   {
@@ -58,6 +60,15 @@ export const parameterControlSpecs: ParameterControlSpec[] = [
     requiresValidation: false,
   },
   {
+    key: "dampingRatio",
+    label: "Damping Ratio",
+    min: 0,
+    max: 2,
+    step: 0.01,
+    controlClass: "runtime_tunable",
+    requiresValidation: false,
+  },
+  {
     key: "phase",
     label: "Phase",
     min: -6.2832,
@@ -74,6 +85,8 @@ const PARAM_MAP: Record<string, keyof CanonicalParams> = {
   A: "amplitude",
   frequency: "frequency",
   f: "frequency",
+  dampingRatio: "dampingRatio",
+  zeta: "dampingRatio",
   phase: "phase",
 };
 
@@ -100,7 +113,9 @@ export function normalize(rawParams: Record<string, unknown>): CanonicalParams {
     throw new Error('Missing required parameter: "frequency" (or alias "f").');
   }
 
-  // Default phase to 0.
+  if (result.dampingRatio === undefined) {
+    result.dampingRatio = 0.05;
+  }
   if (result.phase === undefined) {
     result.phase = 0;
   }
@@ -111,7 +126,7 @@ export function normalize(rawParams: Record<string, unknown>): CanonicalParams {
 export function validateStructure(params: CanonicalParams): string[] {
   const errors: string[] = [];
 
-  const canonicalResult = HarmonicOscillator.safeParse(params);
+  const canonicalResult = DampedOscillator.safeParse(params);
   if (!canonicalResult.success) {
     errors.push(
       ...canonicalResult.error.issues.map(
@@ -121,9 +136,7 @@ export function validateStructure(params: CanonicalParams): string[] {
     return errors;
   }
 
-  const assemblyResult = HarmonicOscillatorAssembly.safeParse(
-    buildHarmonicAssembly(params),
-  );
+  const assemblyResult = DampedOscillatorAssembly.safeParse(buildDampedAssembly(params));
   if (!assemblyResult.success) {
     errors.push(
       ...assemblyResult.error.issues.map(
@@ -138,40 +151,39 @@ export function validateStructure(params: CanonicalParams): string[] {
 export const contracts: Array<(params: CanonicalParams) => string | null> = [
   (p) => (p.amplitude > 0 ? null : `amplitude must be > 0, got ${p.amplitude}.`),
   (p) => (p.frequency > 0 ? null : `frequency must be > 0, got ${p.frequency}.`),
+  (p) => (p.dampingRatio >= 0 ? null : `dampingRatio must be >= 0, got ${p.dampingRatio}.`),
   (p) => {
-    const assembly = buildHarmonicAssembly(p);
-    if (assembly.evolution.kind !== "shm") {
-      return `harmonic_oscillator requires evolution kind "shm", got "${assembly.evolution.kind}".`;
+    const assembly = buildDampedAssembly(p);
+    if (assembly.evolution.kind !== "damped_shm") {
+      return `damped_oscillator requires evolution kind "damped_shm", got "${assembly.evolution.kind}".`;
     }
     if (assembly.state.kind !== "point_mass" || assembly.state.dof !== "1d") {
-      return 'harmonic_oscillator requires state kind "point_mass" with dof "1d".';
+      return 'damped_oscillator requires state kind "point_mass" with dof "1d".';
     }
     if (assembly.domain.kind !== "interval_1d") {
-      return `harmonic_oscillator requires domain kind "interval_1d", got "${assembly.domain.kind}".`;
+      return `damped_oscillator requires domain kind "interval_1d", got "${assembly.domain.kind}".`;
     }
     if (assembly.material.kind !== "ideal_spring") {
-      return `harmonic_oscillator requires material kind "ideal_spring", got "${assembly.material.kind}".`;
+      return `damped_oscillator requires material kind "ideal_spring", got "${assembly.material.kind}".`;
+    }
+    if (assembly.forcing.kind !== "none") {
+      return `damped_oscillator requires forcing kind "none", got "${assembly.forcing.kind}".`;
     }
     return null;
   },
   (p) => {
-    const assembly = buildHarmonicAssembly(p);
-    const hasFixedConstraint = assembly.constraints.some(
-      (constraint) => constraint.type === "fixed",
-    );
+    const assembly = buildDampedAssembly(p);
+    const hasFixedConstraint = assembly.constraints.some((constraint) => constraint.type === "fixed");
     if (!hasFixedConstraint) {
-      return "harmonic_oscillator requires at least one fixed constraint.";
-    }
-    if (assembly.forcing.kind !== "none") {
-      return `harmonic_oscillator requires forcing kind "none", got "${assembly.forcing.kind}".`;
+      return "damped_oscillator requires at least one fixed constraint.";
     }
     return null;
   },
 ];
 
-export type HarmonicOscillator = z.infer<typeof HarmonicOscillator>;
+export type DampedOscillator = z.infer<typeof DampedOscillator>;
 
-function buildHarmonicAssembly(params: CanonicalParams) {
+function buildDampedAssembly(params: CanonicalParams) {
   const mass = 1;
   const omega = 2 * Math.PI * params.frequency;
   const stiffness = mass * omega * omega;
@@ -197,7 +209,7 @@ function buildHarmonicAssembly(params: CanonicalParams) {
     material: {
       kind: "ideal_spring" as const,
       stiffness,
-      dampingRatio: 0,
+      dampingRatio: params.dampingRatio,
     },
     constraints: [
       {
@@ -215,7 +227,8 @@ function buildHarmonicAssembly(params: CanonicalParams) {
       kind: "none" as const,
     },
     evolution: {
-      kind: "shm" as const,
+      kind: "damped_shm" as const,
+      dampingRatio: params.dampingRatio,
     },
   };
 }

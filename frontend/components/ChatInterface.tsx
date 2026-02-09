@@ -7,12 +7,13 @@ interface ChatInterfaceProps {
   messages: Message[];
   onSendMessage: (text: string, image?: { data: string, mimeType: string }) => void;
   onApplyEdit: (prompt: string) => void;
+  onCancelProcess: () => void;
   isLoading: boolean;
   isLightMode: boolean;
   placeholder?: string;
 }
 
-const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, onApplyEdit, isLoading, isLightMode, placeholder: customPlaceholder }) => {
+const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, onApplyEdit, onCancelProcess, isLoading, isLightMode, placeholder: customPlaceholder }) => {
   const [input, setInput] = useState('');
   const [selectedImage, setSelectedImage] = useState<{ data: string, mimeType: string, preview: string } | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -242,9 +243,23 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, 
             </button>
             <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleImageSelect} />
           </div>
-          <button type="submit" disabled={isLoading || (!input.trim() && !selectedImage)} className={`absolute right-2.5 top-1/2 -translate-y-1/2 w-10 h-10 rounded-lg flex items-center justify-center ${isLightMode ? 'text-slate-400 hover:bg-slate-200 hover:text-cyan-600' : 'text-neutral-600 hover:bg-neutral-800 hover:text-cyan-400'} disabled:opacity-20 transition-all`}>
-            <Send size={18} />
-          </button>
+          {isLoading ? (
+            <button
+              type="button"
+              onClick={onCancelProcess}
+              className={`absolute right-2.5 top-1/2 -translate-y-1/2 px-3 h-10 rounded-lg text-[10px] uppercase font-bold tracking-widest transition-all ${
+                isLightMode
+                  ? 'bg-red-50 text-red-700 border border-red-200 hover:bg-red-100'
+                  : 'bg-red-500/10 text-red-300 border border-red-500/30 hover:bg-red-500/20'
+              }`}
+            >
+              Cancel
+            </button>
+          ) : (
+            <button type="submit" disabled={!input.trim() && !selectedImage} className={`absolute right-2.5 top-1/2 -translate-y-1/2 w-10 h-10 rounded-lg flex items-center justify-center ${isLightMode ? 'text-slate-400 hover:bg-slate-200 hover:text-cyan-600' : 'text-neutral-600 hover:bg-neutral-800 hover:text-cyan-400'} disabled:opacity-20 transition-all`}>
+              <Send size={18} />
+            </button>
+          )}
         </form>
       </footer>
     </div>

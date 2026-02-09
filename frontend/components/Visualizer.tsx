@@ -25,7 +25,6 @@ import {
   Trash2,
   Camera
 } from 'lucide-react';
-import { GoogleGenAI } from "@google/genai";
 import { CustomVector } from '../types';
 
 interface VisualizerProps {
@@ -41,6 +40,8 @@ interface VisualizerProps {
   customVectors: CustomVector[];
   setCustomVectors: React.Dispatch<React.SetStateAction<CustomVector[]>>;
   onTelemetryUpdate?: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+  iframeRef?: React.RefObject<HTMLIFrameElement | null>;
+  initialParams?: Record<string, number>;
 }
 
 interface LogEntry {
@@ -54,11 +55,12 @@ interface TelemetryPoint {
   values: Record<string, number>;
 }
 
-const Visualizer: React.FC<VisualizerProps> = ({ 
+const Visualizer: React.FC<VisualizerProps> = ({
   code, isLightMode, time, setTime, isPlaying, setIsPlaying, playbackRate, setPlaybackRate, metadata,
-  customVectors, setCustomVectors, onTelemetryUpdate
+  customVectors, setCustomVectors, onTelemetryUpdate, iframeRef: externalIframeRef, initialParams
 }) => {
-  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const internalRef = useRef<HTMLIFrameElement>(null);
+  const iframeRef = externalIframeRef || internalRef;
   const [isLoaded, setIsLoaded] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [telemetryHistory, setTelemetryHistory] = useState<TelemetryPoint[]>([]);
@@ -189,6 +191,8 @@ const Visualizer: React.FC<VisualizerProps> = ({
         <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
         <script>
           (function() {
+            window.__params = ${JSON.stringify(initialParams || {})};
+
             const tunnel = (level, args) => {
                window.parent.postMessage({ type: 'IFRAME_LOG', level, message: args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ') }, '*');
             };
@@ -213,6 +217,14 @@ const Visualizer: React.FC<VisualizerProps> = ({
               if (event.data?.type === 'SET_POI') {
                 const { position } = event.data;
                 if (window.showPOI) window.showPOI(position);
+              }
+              if (event.data?.type === 'SET_PARAMS') {
+                const params = event.data.params;
+                if (params && typeof params === 'object') {
+                  if (!window.__params) window.__params = {};
+                  Object.assign(window.__params, params);
+                  window.dispatchEvent(new CustomEvent('paramsUpdated', { detail: params }));
+                }
               }
             });
 

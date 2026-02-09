@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# Build / generated
+dist/
+build/
+exports/
+.mastra/output/
+
+# OS / editor junk
+.DS_Store
+.vscode/
+.cursor/
+
+# Lockfiles you do NOT want tracked at root (optional)
+npm-debug.log*

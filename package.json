@@ -1,0 +1,13 @@
+{
+  "name": "stem_3d_visualizer",
+  "private": true,
+  "scripts": {
+    "dev:api": "npm --prefix backend/api run dev",
+    "dev:mastra": "npm --prefix backend/orchestrator run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:all": "bash ./scripts/dev-all.sh",
+    "build:frontend": "npm --prefix frontend run build",
+    "build:mastra": "npm --prefix backend/orchestrator run build",
+    "check:api": "node --check backend/api/index.js"
+  }
+}
