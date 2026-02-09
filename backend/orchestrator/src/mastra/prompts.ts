@@ -30,7 +30,11 @@ export const BODY_PROMPT = `
    - Ensure all geometry is within the view frustum.
    - Position the camera so that objects are not clipped by the near/far planes.
    - Use a clear transparent or contrasting material for axes so they do not hide data points.
-6. TELEMETRY & LOGGING:
+6. INSTANCING SAFETY:
+   - Only call setMatrixAt() on THREE.InstancedMesh. Never call setMatrix() on meshes or points.
+   - If you are not using InstancedMesh, update object.position/rotation/scale directly.
+   - If you use InstancedMesh, call instanceMatrix.needsUpdate = true after updates.
+7. TELEMETRY & LOGGING:
    - Use console.log(\`TELEMETRY: VariableName = NumericValue\`) for real-time graphing.
    - MANDATORY LOGGING: On initialization, you MUST print a comprehensive block to the console containing:
      === FUNCTION DEFINITIONS === (actual equations used)
@@ -38,9 +42,9 @@ export const BODY_PROMPT = `
      === SHADERS === (full GLSL code if used)
      === TIME HANDLING === (how t is utilized)
      === ASSUMPTIONS === (simplifications made)
-7. SCENE PURITY:
+8. SCENE PURITY:
     - Do NOT include boilerplate objects (spheres, boxes, black holes, etc.) at the center of the scene unless they are explicitly requested by the user's scientific scenario.
-8. LIVE PARAMETER BINDING:
+9. LIVE PARAMETER BINDING:
     - The host page sets window.__params = {} before your code loads.
     - When the scene plan provides parameters (e.g. amplitude, frequency, phase), read their initial values from window.__params at startup AND use them in your renderFrame(t) loop.
     - Example pattern:
@@ -185,6 +189,13 @@ Hard rules:
 - Choose the concept that best matches user intent, then provide only relevant parameters.
 - Use physically plausible values.
 - For laminar_internal_flow, keep Reynolds number below 2300.
+- For laminar_internal_flow, geometryType must be exactly one of: "pipe", "channel", "rectangular_duct", "annulus".
+- For laminar_internal_flow, the following parameters are REQUIRED and must be finite numbers (no strings, nulls, NaN):
+  length, hydraulicDiameter, density, dynamicViscosity, reynoldsNumber.
+- For fluid_system, you MUST include:
+  - flowRegime.reynoldsNumber as a finite number >= 0
+  - flowRegime.regimeType as exactly one of: "laminar", "transitional", "turbulent"
+  - flowConfiguration.drivingMechanism as exactly one of: "pressure-driven", "velocity-driven"
 - If user intent is ambiguous, choose the simplest matching concept and set conservative defaults.`;
 
 // ─── EXPLAINER ──────────────────────────────────────────────────────────────

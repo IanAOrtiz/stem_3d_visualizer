@@ -1,6 +1,10 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { X, GripVertical, Send, Loader2, Eye, Zap, SlidersHorizontal, Activity, GraduationCap, Sparkles, ChevronRight, Camera } from 'lucide-react';
+import { X, GripVertical, Send, Loader2, Zap, GraduationCap, Sparkles, ChevronRight, Camera } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 import { CustomVector, Message } from '../types';
 import * as api from '../services/api';
 
@@ -19,6 +23,8 @@ interface SimulationAssistantProps {
   setIsPlaying: (p: boolean) => void;
   onCameraUpdate: (cameraData: { position: { x: number, y: number, z: number }, target: { x: number, y: number, z: number } }) => void;
   onHighlightPoint: (target: { x: number, y: number, z: number }) => void;
+  queuedPrompt?: string | null;
+  onQueuedPromptHandled?: () => void;
 }
 
 const SimulationAssistant: React.FC<SimulationAssistantProps> = ({ 
@@ -35,7 +41,9 @@ const SimulationAssistant: React.FC<SimulationAssistantProps> = ({
   setTime,
   setIsPlaying,
   onCameraUpdate,
-  onHighlightPoint
+  onHighlightPoint,
+  queuedPrompt,
+  onQueuedPromptHandled
 }) => {
   const [width, setWidth] = useState(480);
   const [isResizing, setIsResizing] = useState(false);
@@ -151,10 +159,11 @@ const SimulationAssistant: React.FC<SimulationAssistantProps> = ({
     }]);
   }, [setMessages]);
 
-  const sendMessage = async () => {
-    if (!input.trim() || isThinking) return;
-    const userText = input.trim();
-    setInput('');
+  const sendMessage = async (overrideText?: string) => {
+    if (isThinking) return;
+    const userText = (overrideText ?? input).trim();
+    if (!userText) return;
+    if (!overrideText) setInput('');
     const userMsg: Message = { id: Date.now().toString(), role: 'user', content: userText, timestamp: new Date() };
     setMessages(prev => [...prev, userMsg]);
     setIsThinking(true);
@@ -246,9 +255,15 @@ const SimulationAssistant: React.FC<SimulationAssistantProps> = ({
     return content
       .replace(/\[METADATA\][\s\S]*?\[\/METADATA\]/gi, '')
       .replace(/\[SUGGESTED_EDIT\][\s\S]*?\[\/SUGGESTED_EDIT\]/gi, '')
-      .replace(/```[\s\S]*?```/g, '')
       .trim();
   };
+
+  useEffect(() => {
+    if (queuedPrompt && !isThinking) {
+      sendMessage(queuedPrompt);
+      onQueuedPromptHandled?.();
+    }
+  }, [queuedPrompt, isThinking, onQueuedPromptHandled]);
 
   return (
     <div
@@ -272,7 +287,7 @@ const SimulationAssistant: React.FC<SimulationAssistantProps> = ({
             </div>
             <div>
               <p className="text-[9px] font-black uppercase tracking-[0.4em] text-fuchsia-400 mb-0.5">Scientific Analysis Module</p>
-              <h2 className={`text-sm font-bold uppercase tracking-tight ${isLightMode ? 'text-slate-800' : 'text-slate-100'}`}>Spaide Assistant</h2>
+              <h2 className={`text-sm font-bold uppercase tracking-tight ${isLightMode ? 'text-slate-800' : 'text-slate-100'}`}>Visualization Explainer</h2>
             </div>
           </div>
           <button onClick={onClose} className="p-2 hover:bg-red-500/10 hover:text-red-500 rounded-xl transition-all"><X size={20} /></button>
@@ -286,7 +301,7 @@ const SimulationAssistant: React.FC<SimulationAssistantProps> = ({
                   ? (isLightMode ? 'bg-slate-100 text-slate-800' : 'bg-white/5 text-slate-100 border border-white/5')
                   : (isLightMode ? 'bg-fuchsia-50 text-slate-900 border border-fuchsia-100' : 'bg-fuchsia-500/10 text-fuchsia-50 border border-fuchsia-500/20 shadow-[0_4px_20px_rgba(0,0,0,0.2)]')
               }`}>
-                <div className="text-[8px] font-black uppercase tracking-[0.3em] mb-3 opacity-30">{m.role === 'user' ? 'Inquiry' : 'Assistant Theory'}</div>
+                <div className="text-[8px] font-black uppercase tracking-[0.3em] mb-3 opacity-30">{m.role === 'user' ? 'Inquiry' : 'STEMverse Tutor'}</div>
                 
                 {(m.content.includes('[Cinematic') || m.content.includes('[Spatial')) && (
                   <div className="mb-3 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-cyan-500/20 border border-cyan-500/30 text-[9px] font-black uppercase tracking-widest text-cyan-400">
@@ -295,11 +310,38 @@ const SimulationAssistant: React.FC<SimulationAssistantProps> = ({
                   </div>
                 )}
 
-                <div className="math-container whitespace-pre-wrap leading-[1.8]">{
-                  streamingMsgId === m.id
-                    ? formatHubContent(m.content).split(/(\s+)/).slice(0, streamedTokens).join('')
-                    : formatHubContent(m.content)
-                }</div>
+                <div className="math-container leading-[1.8]">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm, remarkMath]}
+                    rehypePlugins={[rehypeKatex]}
+                    components={{
+                      h1: ({ children }) => <h1 className="text-lg font-bold mt-3 mb-2">{children}</h1>,
+                      h2: ({ children }) => <h2 className="text-base font-bold mt-3 mb-2">{children}</h2>,
+                      h3: ({ children }) => <h3 className="text-sm font-bold mt-2 mb-1">{children}</h3>,
+                      p: ({ children }) => <p className="mb-2 whitespace-pre-wrap">{children}</p>,
+                      ul: ({ children }) => <ul className="list-disc pl-5 mb-2">{children}</ul>,
+                      ol: ({ children }) => <ol className="list-decimal pl-5 mb-2">{children}</ol>,
+                      li: ({ children }) => <li className="mb-1">{children}</li>,
+                      code: ({ inline, children }) => (
+                        inline
+                          ? <code className="px-1 py-0.5 rounded bg-black/10 text-[11px] font-mono">{children}</code>
+                          : <code className="block p-3 rounded-lg bg-black/10 text-[11px] font-mono whitespace-pre-wrap">{children}</code>
+                      ),
+                      blockquote: ({ children }) => (
+                        <blockquote className="border-l-2 border-fuchsia-400/60 pl-3 italic opacity-90">{children}</blockquote>
+                      ),
+                      a: ({ children, href }) => (
+                        <a className="underline underline-offset-2" href={href} target="_blank" rel="noreferrer">{children}</a>
+                      ),
+                      hr: () => <hr className="my-3 border-white/10" />,
+                    }}
+                  >
+                    {streamingMsgId === m.id
+                      ? formatHubContent(m.content).split(/(\s+)/).slice(0, streamedTokens).join('')
+                      : formatHubContent(m.content)
+                    }
+                  </ReactMarkdown>
+                </div>
                 
                 {m.suggestedEdit && (
                   <div className="mt-5 pt-5 border-t border-fuchsia-500/20">
@@ -339,7 +381,7 @@ const SimulationAssistant: React.FC<SimulationAssistantProps> = ({
           <div className="relative group">
             <input 
               type="text" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
-              placeholder="Query scientific core..."
+              placeholder="Ask a question about the visualization..."
               className={`w-full py-4 px-5 pr-14 text-[13px] rounded-2xl outline-none transition-all ${isLightMode ? 'bg-white border-slate-200 focus:border-fuchsia-400 shadow-inner' : 'bg-[#050505] border border-white/5 focus:border-fuchsia-500/50 text-white placeholder-neutral-700'}`}
             />
             {isThinking ? (

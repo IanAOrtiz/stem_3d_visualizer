@@ -2,8 +2,8 @@
 // All AI operations go through Mastra at port 4111.
 // DB operations (feedback, artifact validation) still go to Express at port 3000.
 
-const MASTRA_URL = 'http://localhost:4111';
-const EXPRESS_URL = 'http://localhost:3000';
+const MASTRA_URL = import.meta.env.VITE_MASTRA_URL || 'http://localhost:4111';
+const EXPRESS_URL = import.meta.env.VITE_EXPRESS_URL || 'http://localhost:3000';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 

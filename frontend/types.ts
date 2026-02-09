@@ -11,6 +11,10 @@ export interface Message {
   subject?: Subject;
   temporalMode?: TemporalMode;
   suggestedEdit?: string; // The prompt to apply if the user clicks "Apply Edit"
+  actionButton?: {
+    label: string;
+    prompt: string;
+  };
   info?: {
     title: string;
     description: string;

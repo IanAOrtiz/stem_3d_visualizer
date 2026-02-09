@@ -30,6 +30,7 @@ import { CustomVector } from '../types';
 interface VisualizerProps {
   code: string;
   isLightMode: boolean;
+  isGenerating?: boolean;
   time: number;
   setTime: (t: number) => void;
   isPlaying: boolean;
@@ -56,7 +57,7 @@ interface TelemetryPoint {
 }
 
 const Visualizer: React.FC<VisualizerProps> = ({
-  code, isLightMode, time, setTime, isPlaying, setIsPlaying, playbackRate, setPlaybackRate, metadata,
+  code, isLightMode, isGenerating = false, time, setTime, isPlaying, setIsPlaying, playbackRate, setPlaybackRate, metadata,
   customVectors, setCustomVectors, onTelemetryUpdate, iframeRef: externalIframeRef, initialParams
 }) => {
   const internalRef = useRef<HTMLIFrameElement>(null);
@@ -72,6 +73,7 @@ const Visualizer: React.FC<VisualizerProps> = ({
   const [customSearch, setCustomSearch] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [showStandardTelemetry, setShowStandardTelemetry] = useState(true);
+  const [generationStep, setGenerationStep] = useState(0);
 
   const [hudPos, setHudPos] = useState({ x: window.innerWidth - 340, y: 80 }); 
   const [isDragging, setIsDragging] = useState(false);
@@ -298,6 +300,18 @@ const Visualizer: React.FC<VisualizerProps> = ({
     }
   }, [code, isLightMode]);
 
+  useEffect(() => {
+    if (!isGenerating) {
+      setGenerationStep(0);
+      return;
+    }
+    const steps = 4;
+    const interval = setInterval(() => {
+      setGenerationStep(prev => (prev + 1) % steps);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [isGenerating]);
+
   const latestTelemetry = telemetryHistory[telemetryHistory.length - 1]?.values || {};
 
   return (
@@ -373,6 +387,22 @@ const Visualizer: React.FC<VisualizerProps> = ({
         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none bg-inherit z-[120]">
           <div className="w-12 h-12 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mb-6" />
           <p className="text-[10px] font-bold uppercase tracking-[0.3em] animate-pulse text-cyan-500">Connecting Neural Bus...</p>
+        </div>
+      )}
+      {isGenerating && (
+        <div className="absolute inset-0 flex items-center justify-center z-[130]">
+          <div className="bg-black/60 border border-white/10 rounded-2xl px-6 py-5 backdrop-blur-xl shadow-2xl text-center max-w-sm">
+            <div className="w-14 h-14 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+            <div className="text-[10px] font-bold uppercase tracking-[0.3em] text-cyan-400 mb-2">
+              Visualization generation can take some time
+            </div>
+            <div className="text-sm font-semibold text-white">
+              {generationStep === 0 && 'Planning scene'}
+              {generationStep === 1 && 'Validating parameters'}
+              {generationStep === 2 && 'Explaining physics'}
+              {generationStep === 3 && 'Constructing visualization'}
+            </div>
+          </div>
         </div>
       )}
     </div>

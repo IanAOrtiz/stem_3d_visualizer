@@ -8,12 +8,13 @@ interface ChatInterfaceProps {
   onSendMessage: (text: string, image?: { data: string, mimeType: string }) => void;
   onApplyEdit: (prompt: string) => void;
   onCancelProcess: () => void;
+  onMessageAction?: (prompt: string) => void;
   isLoading: boolean;
   isLightMode: boolean;
   placeholder?: string;
 }
 
-const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, onApplyEdit, onCancelProcess, isLoading, isLightMode, placeholder: customPlaceholder }) => {
+const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, onApplyEdit, onCancelProcess, onMessageAction, isLoading, isLightMode, placeholder: customPlaceholder }) => {
   const [input, setInput] = useState('');
   const [selectedImage, setSelectedImage] = useState<{ data: string, mimeType: string, preview: string } | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -33,6 +34,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, 
       setInput('');
       setSelectedImage(null);
     }
+  };
+
+  const handleQuickSend = (text: string) => {
+    if (isLoading) return;
+    onSendMessage(text);
   };
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -169,7 +175,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, 
             <Terminal size={16} className="text-cyan-500" />
           </div>
           <div>
-            <h2 className={`text-xs font-bold tracking-[0.2em] uppercase ${themeClasses.text}`}>Architect Terminal</h2>
+            <h2 className={`text-xs font-bold tracking-[0.2em] uppercase ${themeClasses.text}`}>Visualization Creator</h2>
             <p className={`text-[9px] font-bold uppercase tracking-widest opacity-40 mt-0.5`}>v4.2.0-STABLE</p>
           </div>
         </div>
@@ -197,6 +203,16 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, 
               <div className="content-rendered">
                 {renderContent(msg.content, msg.id)}
               </div>
+              {msg.actionButton && msg.role === 'assistant' && (
+                <div className="mt-4 pt-4 border-t border-white/10">
+                  <button
+                    onClick={() => onMessageAction?.(msg.actionButton!.prompt)}
+                    className="w-full py-2.5 px-4 rounded-xl text-[10px] font-bold uppercase tracking-widest bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/30 transition-all"
+                  >
+                    {msg.actionButton.label}
+                  </button>
+                </div>
+              )}
             </div>
             <span className={`mt-2 mx-2 text-[8px] uppercase font-bold tracking-widest ${isLightMode ? 'text-slate-400' : 'text-neutral-600'}`}>
               {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
@@ -218,6 +234,37 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, 
       </div>
 
       <footer className={`p-6 border-t ${themeClasses.border} ${themeClasses.footer} bg-black/10`}>
+        <div className="mb-4">
+          <p className={`text-[9px] uppercase font-bold tracking-widest mb-2 ${themeClasses.subtext}`}>
+            Examples
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => handleQuickSend('Turbulent Flow Box')}
+              disabled={isLoading}
+              className="px-3 py-2 rounded-lg text-[10px] uppercase font-bold tracking-widest border border-white/10 hover:bg-white/5 disabled:opacity-40"
+            >
+              Turbulent Flow Box
+            </button>
+            <button
+              type="button"
+              onClick={() => handleQuickSend('Fluid FBM Simulation')}
+              disabled={isLoading}
+              className="px-3 py-2 rounded-lg text-[10px] uppercase font-bold tracking-widest border border-white/10 hover:bg-white/5 disabled:opacity-40"
+            >
+              Fluid FBM Simulation
+            </button>
+            <button
+              type="button"
+              onClick={() => handleQuickSend('Double Slit Experiment')}
+              disabled={isLoading}
+              className="px-3 py-2 rounded-lg text-[10px] uppercase font-bold tracking-widest border border-white/10 hover:bg-white/5 disabled:opacity-40"
+            >
+              Double Slit Experiment
+            </button>
+          </div>
+        </div>
         {selectedImage && (
           <div className="mb-4 relative inline-block">
             <img src={selectedImage.preview} alt="Upload preview" className="h-20 w-auto rounded-lg border border-cyan-500/30 object-cover" />
@@ -234,7 +281,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, 
             onChange={(e) => setInput(e.target.value)}
             onPaste={handlePaste}
             disabled={isLoading}
-            placeholder={selectedImage ? "Describe simulation constraints..." : (customPlaceholder || "Execute architectural command...")}
+            placeholder={selectedImage ? "Describe simulation constraints..." : (customPlaceholder || "Type what you want to visualize...")}
             className={`w-full ${themeClasses.inputBg} border ${themeClasses.inputBorder} rounded-xl py-4 px-5 pl-12 pr-14 text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500/30 transition-all ${isLightMode ? 'placeholder:text-slate-400' : 'placeholder:text-neutral-700'} disabled:opacity-50 font-medium`}
           />
           <div className="absolute left-2.5 top-1/2 -translate-y-1/2 flex items-center">

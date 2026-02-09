@@ -1,15 +1,13 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Message, Subject, TemporalMode, CustomVector } from './types';
+import { Message, CustomVector } from './types';
 import * as api from './services/api';
 import ChatInterface from './components/ChatInterface';
 import Visualizer from './components/Visualizer';
-import DraggableInfoBox from './components/DraggableInfoBox';
 import SimulationAssistant from './components/SimulationAssistant';
 import FeedbackModal from './components/FeedbackModal';
-import ParameterControlsPanel from './components/ParameterControlsPanel';
 import { INITIAL_MESSAGE } from './constants';
-import { RefreshCw, MessageSquare, MessageSquareOff, Bot, Sun, Moon, Database, Terminal, BookOpen } from 'lucide-react';
+import { Bot, Database, Terminal } from 'lucide-react';
 
 const REFERENCE_VISUALIZATION = `
 <!DOCTYPE html>
@@ -88,7 +86,7 @@ const App: React.FC = () => {
     { 
       id: '1', 
       role: 'assistant', 
-      content: `ARCHITECT_TERMINAL: Booting system... Initial source code loaded.\n\n\`\`\`html\n${REFERENCE_VISUALIZATION}\n\`\`\``, 
+      content: 'VISUALIZATION_CREATOR: Type what you want to visualize.', 
       timestamp: new Date() 
     },
   ]);
@@ -98,7 +96,7 @@ const App: React.FC = () => {
   
   const [isLoading, setIsLoading] = useState(false);
   const [activeCode, setActiveCode] = useState<string>(REFERENCE_VISUALIZATION);
-  const [theme, setTheme] = useState<'light' | 'dark'>('dark');
+  const theme: 'dark' = 'dark';
   const [currentMetadata, setCurrentMetadata] = useState<{ key: string; description: string; code: string; tags: string[] } | null>({
     key: "system_standby_node",
     description: "Core visualization node is currently in idle mode. Awaiting scientific parameters or visual reference for structural instantiation.",
@@ -110,10 +108,10 @@ const App: React.FC = () => {
   const [isPlaying, setIsPlaying] = useState(true);
   const [isChatVisible, setIsChatVisible] = useState(true);
   const [isAssistantOpen, setIsAssistantOpen] = useState(false);
+  const [queuedExplainerPrompt, setQueuedExplainerPrompt] = useState<string | null>(null);
   const [customVectors, setCustomVectors] = useState<CustomVector[]>([]);
-  const [telemetry, setTelemetry] = useState<Record<string, string>>({});
   const [isFeedbackModalOpen, setIsFeedbackModalOpen] = useState(false);
-  const [mode, setMode] = useState<'generate' | 'library'>('generate');
+  const [mode] = useState<'generate' | 'library'>('library');
   const [currentScenePlan, setCurrentScenePlan] = useState<any | null>(null);
   const [currentSceneHash, setCurrentSceneHash] = useState<string | null>(null);
   const visualizerIframeRef = useRef<HTMLIFrameElement>(null);
@@ -155,32 +153,6 @@ const App: React.FC = () => {
     }
   };
 
-  const extractCode = (text: string) => {
-    const codeMatch = text.match(/```(?:html|javascript|threejs|js)?\s*([\s\S]*?)```/i);
-    if (codeMatch) return codeMatch[1].trim();
-    const lower = text.toLowerCase();
-    const dIdx = lower.indexOf('<!doctype');
-    const hIdx = lower.indexOf('<html');
-    const start = dIdx !== -1 ? dIdx : (hIdx !== -1 ? hIdx : -1);
-    if (start !== -1) {
-      const endIdx = lower.lastIndexOf('</html>');
-      return text.substring(start, endIdx !== -1 ? endIdx + 7 : undefined).trim();
-    }
-    return null;
-  };
-
-  const parseMetadata = (text: string) => {
-    const match = text.match(/\[METADATA\]\s*([\s\S]*?)\s*\[\/METADATA\]/i);
-    if (match) {
-      try {
-        return JSON.parse(match[1]);
-      } catch (e) {
-        console.error("Metadata parsing failed", e);
-      }
-    }
-    return null;
-  };
-
   const handleTerminalSendMessage = async (text: string, image?: { data: string, mimeType: string }) => {
     if (isLoading) return;
     const userMsg: Message = { id: Date.now().toString(), role: 'user', content: text, timestamp: new Date() };
@@ -202,23 +174,23 @@ const App: React.FC = () => {
           setCurrentSceneHash(result.sceneHash || null);
           setCurrentScenePlan(null);
           setTerminalMessages(prev => [...prev, {
-            id: Date.now().toString(), role: 'assistant',
-            content: `LIBRARY_LOAD: Matched snippet "${result.key}" for intent "${text.trim()}". Rendered directly from database.${result.sceneHash ? ` Scene hash: ${result.sceneHash.substring(0, 8)}...` : ''}`, timestamp: new Date()
+            id: Date.now().toString(),
+            role: 'assistant',
+            content: `Loaded "${text.trim()}"`,
+            actionButton: {
+              label: 'Explain what I\u2019m looking at',
+              prompt: "explain what i'm looking at"
+            },
+            timestamp: new Date()
           }]);
           libraryHit = true;
         } else {
           console.log(`[APP] Library MISS — ${result.reason}`);
-          setTerminalMessages(prev => [...prev, {
-            id: Date.now().toString(), role: 'assistant',
-            content: `LIBRARY_FALLBACK: ${result.reason}. Falling back to generate pipeline...`, timestamp: new Date()
-          }]);
+        // Suppress library fallback message in the Visualization Creator UI.
         }
       } catch (e) {
         console.warn(`[APP] Library workflow error — falling back to generate pipeline`, e);
-        setTerminalMessages(prev => [...prev, {
-          id: Date.now().toString(), role: 'assistant',
-          content: "LIBRARY_FALLBACK: Could not reach backend. Falling back to generate pipeline...", timestamp: new Date()
-        }]);
+        // Suppress library fallback message in the Visualization Creator UI.
       }
       if (libraryHit) {
         console.log(`[APP] Library mode complete — skipping generate pipeline`);
@@ -241,24 +213,24 @@ const App: React.FC = () => {
 
       if (result.scenePlan) {
         setCurrentScenePlan(result.scenePlan);
-        setTerminalMessages(prev => [...prev, {
-          id: Date.now().toString(),
-          role: 'assistant',
-          content: `SCENE_PLAN_VALIDATED: ${JSON.stringify(result.scenePlan.parameters)}\n\nEXPLANATION: ${result.explanation}`,
-          timestamp: new Date()
-        }]);
       }
 
       const code = result.code;
       if (code && !code.includes("CONCEPTUAL_QUERY:")) {
         setActiveCode(code);
         if (result.metadata) setCurrentMetadata(result.metadata);
-        setTerminalMessages(prev => [...prev, {
-          id: Date.now().toString(),
-          role: 'assistant',
-          content: `ARCHITECT_OUTPUT: Code generated (${code.length} chars).`,
-          timestamp: new Date()
-        }]);
+        if (result.explanation) {
+          setTerminalMessages(prev => [...prev, {
+            id: Date.now().toString(),
+            role: 'assistant',
+            content: result.explanation,
+            actionButton: {
+              label: 'Explain what I\u2019m looking at',
+              prompt: "explain what i'm looking at"
+            },
+            timestamp: new Date()
+          }]);
+        }
 
         // Auto-validate artifact
         if (result.scenePlan) {
@@ -283,7 +255,7 @@ const App: React.FC = () => {
         setTerminalMessages(prev => [...prev, {
           id: Date.now().toString(),
           role: 'assistant',
-          content: "LOG: Input detected as conceptual. Architectural refinement aborted. Consult the Spaide Assistant for scientific analysis.",
+          content: "LOG: Input detected as conceptual. Architectural refinement aborted. Consult the Visualization Explainer for scientific analysis.",
           timestamp: new Date()
         }]);
       } else {
@@ -530,7 +502,23 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className={`flex h-screen w-screen overflow-hidden ${theme === 'dark' ? 'bg-[#020202] text-white' : 'bg-white text-slate-900'}`}>
+    <div className={`relative flex h-screen w-screen overflow-hidden ${theme === 'dark' ? 'bg-[#020202] text-white' : 'bg-white text-slate-900'}`}>
+      <div
+        className="absolute top-1/2 -translate-y-1/2 z-[95] transition-[left] duration-500 ease-in-out"
+        style={{ left: isChatVisible ? '440px' : '0px', transform: 'translate(50%, -50%)' }}
+      >
+        <button 
+          onClick={() => setIsChatVisible(!isChatVisible)} 
+          className={`w-12 h-12 rounded-full border flex items-center justify-center transition-all shadow-2xl backdrop-blur-xl ${
+            isChatVisible
+              ? 'bg-cyan-500/20 border-cyan-500/30 text-cyan-400'
+              : 'bg-black/40 border-white/10 text-neutral-400 hover:text-white'
+          }`}
+          title={isChatVisible ? 'Close Creator' : 'Open Creator'}
+        >
+          <Terminal size={18} />
+        </button>
+      </div>
       <div className={`transition-all duration-500 ease-in-out ${isChatVisible ? 'w-[440px]' : 'w-0'} overflow-hidden border-r border-white/5 relative`}>
         <div className="w-[440px] h-full">
           <ChatInterface
@@ -538,9 +526,13 @@ const App: React.FC = () => {
             onSendMessage={handleTerminalSendMessage}
             onApplyEdit={handleApplyRefinement}
             onCancelProcess={handleCancelArchitectProcess}
+            onMessageAction={(prompt) => {
+              setIsAssistantOpen(true);
+              setQueuedExplainerPrompt(prompt);
+            }}
             isLoading={isLoading}
             isLightMode={theme === 'light'}
-            placeholder={mode === 'library' ? 'Enter snippet key...' : undefined}
+            placeholder="Type what you want to visualize"
           />
         </div>
       </div>
@@ -550,44 +542,14 @@ const App: React.FC = () => {
           code={activeCode} isLightMode={theme === 'light'} time={globalTime} setTime={setGlobalTime}
           isPlaying={isPlaying} setIsPlaying={setIsPlaying} playbackRate={playbackRate} setPlaybackRate={setPlaybackRate}
           metadata={currentMetadata ? { title: currentMetadata.key, description: currentMetadata.description, subject: 'Physics', temporalMode: 'Transient' } : undefined} customVectors={customVectors} setCustomVectors={setCustomVectors}
-          onTelemetryUpdate={setTelemetry}
           iframeRef={visualizerIframeRef}
           initialParams={currentScenePlan?.parameters}
+          isGenerating={isLoading}
         />
         
-        <div className="absolute top-6 left-6 z-[90] flex items-center gap-3">
-           <button 
-             onClick={() => setIsChatVisible(!isChatVisible)} 
-             className={`flex items-center gap-3 px-6 py-3.5 rounded-2xl border transition-all backdrop-blur-xl shadow-2xl ${
-               isChatVisible 
-               ? 'bg-cyan-500/20 border-cyan-500/30 text-cyan-400' 
-               : 'bg-black/40 border-white/10 text-neutral-400 hover:text-white'
-             }`}
-           >
-            <Terminal size={18} />
-            <span className="font-bold uppercase tracking-widest text-[10px]">{isChatVisible ? 'Close Terminal' : 'Architect Terminal'}</span>
-          </button>
-        </div>
 
         <div className="absolute top-6 right-6 flex items-center gap-3 z-[90]">
            <button
-             onClick={() => setMode(mode === 'generate' ? 'library' : 'generate')}
-             className={`flex items-center gap-3 px-6 py-3.5 rounded-2xl border transition-all backdrop-blur-xl shadow-2xl ${
-               mode === 'library'
-               ? 'bg-orange-500/20 border-orange-500/30 text-orange-400'
-               : 'bg-black/40 border-white/10 text-neutral-400 hover:text-white'
-             }`}
-           >
-            <BookOpen size={18} />
-            <span className="font-bold uppercase tracking-widest text-[10px]">{mode === 'library' ? 'Library Mode' : 'Generate Mode'}</span>
-           </button>
-           <button
-             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-             className={`p-3.5 rounded-2xl border border-white/10 bg-black/40 text-neutral-400 hover:text-white transition-all backdrop-blur-xl shadow-2xl`}
-           >
-            {theme === 'dark' ? <Sun size={18} className="text-amber-500" /> : <Moon size={18} className="text-fuchsia-500" />}
-           </button>
-            <button
              onClick={() => setIsFeedbackModalOpen(true)}
              className="p-3.5 rounded-2xl border border-white/10 bg-black/40 text-neutral-400 hover:text-white transition-all backdrop-blur-xl shadow-2xl"
            >
@@ -599,7 +561,7 @@ const App: React.FC = () => {
              : 'bg-black/40 border-white/10 text-neutral-400 hover:text-white'
            }`}>
             <Bot size={18} />
-            <span className="font-bold uppercase tracking-widest text-[10px]">{isAssistantOpen ? 'Active Assistant' : 'Spaide Assistant'}</span>
+            <span className="font-bold uppercase tracking-widest text-[10px]">{isAssistantOpen ? 'Active Explainer' : 'Visualization Explainer'}</span>
           </button>
         </div>
         
@@ -610,15 +572,11 @@ const App: React.FC = () => {
           isLoading={isLoading} setTime={setGlobalTime} setIsPlaying={setIsPlaying}
           onCameraUpdate={handleCameraUpdate}
           onHighlightPoint={handleHighlightPoint}
+          queuedPrompt={queuedExplainerPrompt}
+          onQueuedPromptHandled={() => setQueuedExplainerPrompt(null)}
         />
 
-        <ParameterControlsPanel
-          scenePlan={currentScenePlan}
-          isLightMode={theme === 'light'}
-          isBusy={isLoading}
-          iframeRef={visualizerIframeRef}
-          onCommit={handleCommitParameterPatch}
-        />
+        {/* Parameter controls hidden for now */}
       </main>
 
       <FeedbackModal

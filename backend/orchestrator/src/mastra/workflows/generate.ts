@@ -67,6 +67,7 @@ const planStep = createStep({
           JSON.stringify(lastCandidate ?? lastRawOutput, null, 2),
           'Validation diagnostics:',
           diagnostics,
+          'Fix ONLY the validation errors above. Do not invent new fields beyond the schema.',
           'Return a fully corrected scene plan JSON object with fields: concept, schemaVersion, parameters.',
         );
       }

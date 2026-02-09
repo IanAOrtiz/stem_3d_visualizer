@@ -73,4 +73,4 @@ ${BODY_PROMPT}
    - Code: Provide the complete HTML file with embedded scripts. Do NOT summarize equations; print them exactly as defined in the code to the console using the mandatory headers.
 `;
 
-export const INITIAL_MESSAGE = "Systems operational. Provide a scenario or upload a visual reference, and I will generate a high-fidelity 3D simulation with real-time vector graphing and temporal scrubbing.";
+export const INITIAL_MESSAGE = "Ask a question about this visualization.";
